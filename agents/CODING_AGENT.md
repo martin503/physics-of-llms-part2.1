@@ -48,3 +48,4 @@ This means the testing agent has finished and updated `CHANGELOG.md`. Read it an
 - Use assertions, especially for shapes in complicated logic
 - Line length: 99 chars max
 - Commit trailers for bugs/issues per `AGENTS.md`; never mention the tool used
+- Runnable scripts should use typer for cli

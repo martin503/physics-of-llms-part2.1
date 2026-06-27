@@ -10,14 +10,22 @@ authors = [
 ]
 dependencies = [
     "accelerate>=1.14.0",
+    "datasets>=5.0.0",
     "einops>=0.8.2",
     "jaxtyping>=0.3.11",
     "matplotlib>=3.11.0",
+    "networkx>=3.6",
     "notebook>=7.6.0",
-    "torch>=2.12.1",
+    "pyarrow>=15",
+    "tqdm>=4.66",
     "transformer-lens>=3.2.1",
     "transformers>=5",
+    "typer>=0.25.1",
     "wandb>=0.28.0",
+    "torch<=2.9",
+    "ninja>=1.13.0",
+    "packaging>=26.2",
+    "psutil>=7.2.2",
 ]
 
 [dependency-groups]
@@ -27,6 +35,15 @@ dev = [
     "pytest",
     "pre-commit",
 ]
+flash = [
+    "flash-attn",
+]
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [{ requirement = "torch", match-runtime = true }]
+
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 
 [tool.ruff]
 line-length = 99
@@ -44,6 +61,10 @@ select = [
     "UP",     # pyupgrade
 ]
 ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# jaxtyping shape strings (e.g. 'batch heads seq dim') are not valid Python and trip F722.
+"src/model/*.py" = ["F722"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
