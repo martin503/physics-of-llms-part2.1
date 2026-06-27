@@ -104,10 +104,10 @@ def train(
         Path, typer.Option('--output-dir', help='Where to write checkpoints.')
     ] = Path('models/gpt2-rope-igsm'),
     context_length: Annotated[int, typer.Option('--context-length')] = DEFAULT_CONTEXT_LENGTH,
-    per_device_train_batch_size: Annotated[int, typer.Option('--per-device-train-batch-size')] = 8,
+    per_device_train_batch_size: Annotated[int, typer.Option('--per-device-train-batch-size')] = 16,
     gradient_accumulation_steps: Annotated[
         int, typer.Option('--gradient-accumulation-steps')
-    ] = 32,
+    ] = 16,
     learning_rate: Annotated[float, typer.Option('--learning-rate')] = 2e-3,
     max_steps: Annotated[
         int, typer.Option('--max-steps', help='Paper uses 100k; 5k is a working default.')
