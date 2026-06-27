@@ -123,6 +123,19 @@ def train(
     gradient_checkpointing: Annotated[bool, typer.Option('--gradient-checkpointing')] = False,
     logging_steps: Annotated[int, typer.Option('--logging-steps')] = 20,
     save_steps: Annotated[int, typer.Option('--save-steps')] = 1_000,
+    eval_data_dir: Annotated[
+        Path, typer.Option('--eval-data-dir', help='Packed iGSM validation dataset dir.')
+    ] = Path('data/igsm_val'),
+    per_device_eval_batch_size: Annotated[int, typer.Option('--per-device-eval-batch-size')] = 8,
+    eval_steps: Annotated[
+        int, typer.Option('--eval-steps', help='Validate every N optimizer steps.')
+    ] = 1_000,
+    max_eval_samples: Annotated[
+        int | None, typer.Option('--max-eval-samples', help='Cap val-set size (None = all).')
+    ] = None,
+    no_eval: Annotated[
+        bool, typer.Option('--no-eval', help='Disable validation entirely.')
+    ] = False,
     attn_implementation: Annotated[str, typer.Option('--attn-implementation')] = 'sdpa',
     report_to: Annotated[list[str] | None, typer.Option('--report-to')] = None,
     seed: Annotated[int, typer.Option('--seed')] = 0,
@@ -153,6 +166,9 @@ def train(
         logging_steps = 1
         save_steps = max_steps
         dataloader_num_workers = 0
+        max_eval_samples = 16  # don't iterate all val windows on CPU
+        per_device_eval_batch_size = 2
+        eval_steps = max_steps  # = 4 -> eval runs once during training, plus the final one
     else:
         config = build_gpt2_config(
             vocab_size=VOCAB_SIZE,
@@ -164,12 +180,29 @@ def train(
         f'Building GPT-2 + RoPE ({"smoke" if smoke else "12-12"}): '
         f'{config.num_hidden_layers}L {config.n_embd}d {config.num_attention_heads}h'
     )
+    if bf16 and attn_implementation == "flash_attention_2":
+        config.dtype = torch.bfloat16
     model = build_gpt2_rope(config, attn_implementation=attn_implementation)
+    if bf16 and attn_implementation == "flash_attention_2":
+        model.to(torch.bfloat16)
 
     typer.echo(f'Loading packed dataset from {data_dir}...')
     hf_dataset = load_igsm_dataset(data_dir)
     train_dataset = PackedDataset(hf_dataset)
     typer.echo(f'  {len(train_dataset)} examples of length {train_dataset.length}')
+
+    eval_dataset: PackedDataset | None = None
+    if no_eval:
+        typer.echo('  (validation disabled via --no-eval)')
+    else:
+        try:
+            eval_hf = load_igsm_dataset(eval_data_dir)  # raises FileNotFoundError if no shards
+            if max_eval_samples is not None:
+                eval_hf = eval_hf.select(range(min(max_eval_samples, len(eval_hf))))
+            eval_dataset = PackedDataset(eval_hf)
+            typer.echo(f'  eval: {len(eval_dataset)} examples of length {eval_dataset.length}')
+        except FileNotFoundError:
+            typer.echo(f'  (no eval data at {eval_data_dir}; skipping validation)')
 
     callbacks: list[TrainerCallback] = []
     if 'wandb' in report_to and not smoke:
@@ -199,6 +232,9 @@ def train(
         save_strategy='steps',
         save_steps=save_steps,
         save_total_limit=3,
+        eval_strategy='steps' if eval_dataset is not None else 'no',
+        eval_steps=eval_steps,
+        per_device_eval_batch_size=per_device_eval_batch_size,
         report_to=report_to,
         # Frozen unused wpe is invisible to DDP (requires_grad=False), so False is safe.
         ddp_find_unused_parameters=False,
@@ -212,11 +248,15 @@ def train(
         model=model,
         args=args,
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=make_collator(train_dataset.length),
         callbacks=callbacks,
     )
     typer.echo('Starting training...')
     trainer.train()
+    if eval_dataset is not None:
+        final_metrics = trainer.evaluate()
+        typer.echo(f'Final validation: loss={final_metrics["eval_loss"]:.4f}')
     trainer.save_model(str(output_dir / 'final'))
     typer.echo(f'Done. Model saved to {output_dir / "final"}')
 
