@@ -1,0 +1,51 @@
+[project]
+name = "physics_of_lms_part2.1"
+version = "0.1.0"
+description = "This project aims to reproduce the paper \"Physics of Language Models: Part 2.1\""
+readme = "README.md"
+requires-python = "==3.12.*"
+authors = [
+    { name = "Marcin", email = "m6rcin53@gmail.com" },
+    { name = "Sebastian", email = "idk" }
+]
+dependencies = [
+    "accelerate>=1.14.0",
+    "einops>=0.8.2",
+    "jaxtyping>=0.3.11",
+    "torch>=2.12.1",
+    "transformer-lens>=3.2.1",
+    "transformers>=5",
+    "wandb>=0.28.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "ty",
+    "pytest",
+    "pre-commit",
+]
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
