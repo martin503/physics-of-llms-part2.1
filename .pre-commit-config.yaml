@@ -23,7 +23,7 @@ repos:
       # Run the formatter.
       - id: ruff-format
         types_or: [ python, pyi ]
-        args: ["--line-lenght", "99"]
+        args: ["--line-length", "99"]
 
   - repo: https://github.com/asottile/pyupgrade
     rev: v3.21.2
