@@ -104,7 +104,11 @@ class GPT2AttentionWithRoPE(GPT2Attention):
         **kwargs,
     ) -> tuple[torch.Tensor | tuple[torch.Tensor], ...]:
         # Position ids reach here via **kwargs from GPT2Model -> GPT2Block -> attn.
-        position_ids = kwargs.pop('position_ids', None)
+        # Read (do NOT pop): they must stay in ``kwargs`` so the attention interface receives
+        # them too -- FlashAttention derives ``cu_seq_lens`` from position-id resets to block
+        # cross-attention between packed sequences (TRL bfd packing + padding_free). Popping
+        # here would silently make packed samples attend across problem boundaries.
+        position_ids = kwargs.get('position_ids', None)
         is_cross_attention = encoder_hidden_states is not None
         if past_key_values is not None:
             if isinstance(past_key_values, EncoderDecoderCache):

@@ -20,6 +20,9 @@ CLI::
     uv run python -m src.data.igsm sanity
     uv run python -m src.data.igsm generate --split train --num-problems 200000 \\
         --batch-size 5000 --workers 8 --out data/igsm_train
+    # raw (unpacked) problems for online TRL packing during training (see src.train.gpt_pack):
+    uv run python -m src.data.igsm generate --raw --split train --num-problems 200000 \\
+        --batch-size 20000 --workers 8 --out data/igsm_raw
     uv run python -m src.data.igsm push --data-dir data/igsm_train --repo-id user/igsm-med
 """
 
@@ -41,7 +44,7 @@ import typer
 from tqdm import tqdm
 
 if TYPE_CHECKING:
-    from datasets import Dataset
+    from datasets import Dataset, IterableDataset
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 IGSM_REPO_ROOT = REPO_ROOT / 'iGSM'
@@ -218,17 +221,20 @@ def _shard_path(out: Path, batch_idx: int) -> Path:
     return out / f'{SHARD_PREFIX}{batch_idx:06d}{SHARD_SUFFIX}'
 
 
-def _write_shard_atomic(windows: list[list[int]], path: Path) -> None:
-    """Write ``windows`` to ``path`` as parquet via a temp file, then atomically rename.
+def _write_shard_atomic(rows: list[list[int]], path: Path, require_uniform: bool = True) -> None:
+    """Write ``rows`` to ``path`` as parquet via a temp file, then atomically rename.
 
-    A partial write (interrupt) leaves a hidden ``.<name>.partial`` file that is never matched
-    by :func:`_done_batches`, so resume correctly re-does the interrupted batch.
+    ``rows`` are either packed windows (uniform length, ``require_uniform=True``) or raw
+    problems (variable length, ``require_uniform=False``). A partial write (interrupt) leaves a
+    hidden ``.<name>.partial`` file that is never matched by :func:`_done_batches`, so resume
+    correctly re-does the interrupted batch.
     """
-    assert windows, 'cannot write an empty shard'
-    window_len = len(windows[0])
-    assert all(len(w) == window_len for w in windows), 'non-uniform window lengths'
+    assert rows, 'cannot write an empty shard'
+    if require_uniform:
+        row_len = len(rows[0])
+        assert all(len(r) == row_len for r in rows), 'non-uniform window lengths'
     tmp = path.with_name(f'.{path.name}.partial')
-    table = pa.table({'input_ids': windows})  # list<int64> column
+    table = pa.table({'input_ids': rows})  # list<int64> column
     pq.write_table(table, str(tmp))
     os.replace(tmp, path)  # atomic on the same filesystem
 
@@ -281,6 +287,32 @@ def load_igsm_dataset(path: Path | str) -> Dataset:
     raise FileNotFoundError(f'No parquet shards or HF dataset found at {path}')
 
 
+def load_igsm_stream(path: Path | str) -> IterableDataset:
+    """Stream a sharded (parquet) iGSM dataset lazily as a HF ``IterableDataset``.
+
+    Unlike :func:`load_igsm_dataset` (map-style, all-in-memory), this streams the
+    ``batch_*.parquet`` shards -- suited to online TRL packing of **raw** problems during
+    training (see :mod:`src.train.gpt_pack`). HF shards the stream by *file* across DDP ranks
+    and DataLoader workers, so generate enough shards for your setup
+    (``num_problems / batch_size >= world_size * num_workers``) or some workers will idle.
+
+    Yields ``{'input_ids': [...]}`` rows (one raw problem each, or one packed window each --
+    depending on how the dir was generated).
+    """
+    from datasets import load_dataset
+
+    path = Path(path)
+    shards = sorted(path.glob(f'{SHARD_PREFIX}*{SHARD_SUFFIX}'))
+    if not shards:
+        raise FileNotFoundError(f'No parquet shards found at {path}')
+    return load_dataset(
+        'parquet',
+        data_files={'train': [str(s) for s in shards]},
+        split='train',
+        streaming=True,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Resumable batched generation
 # --------------------------------------------------------------------------- #
@@ -297,24 +329,31 @@ def generate_to_dir(
     context_length: int = DEFAULT_CONTEXT_LENGTH,
     med_cfg: dict[str, Any] | None = None,
     overwrite: bool = False,
+    pack: bool = True,
     problem_generator: Callable[..., list[list[int]]] | None = None,
 ) -> dict[str, Any]:
-    """Generate ``num_problems`` iGSM problems, packing+writing them as resumable parquet shards.
+    """Generate ``num_problems`` iGSM problems, writing them as resumable parquet shards.
 
     Args:
         out: Output directory (created if missing).
         num_problems: Total problems to generate.
         split: 'train' or 'test' (hash-bin selection).
-        batch_size: Problems per batch == one parquet shard. Smaller -> finer progress bar and
-            smaller interrupt loss; larger -> fewer files.
+        batch_size: Problems per batch == one parquet shard. Smaller -> finer progress bar,
+            smaller interrupt loss, and (for ``pack=False``) more files for better streaming
+            parallelism; larger -> fewer files.
         workers: Parallel generation processes (one persistent pool for all batches).
         seed: Base RNG seed. Batch ``b`` worker ``i`` uses ``seed + b*workers + i`` (globally
             unique -> resumable and duplicate-free).
+        context_length: Packed window length. Only used when ``pack=True`` (ignored otherwise).
+        med_cfg: iGSM-med config (defaults to :data:`IGSM_MED`).
         overwrite: If True, delete ``out`` first and start from scratch.
+        pack: If True (default), pack problems into fixed ``context_length`` windows (one row
+            per window). If False, write **raw** problems (one variable-length row per problem)
+            for online packing at train time (see :func:`load_igsm_stream`).
         problem_generator: Injectable generator (defaults to the real iGSM one) for testing.
 
     Returns:
-        A stats dict (problems, batches, shards, windows, ...).
+        A stats dict (problems, batches, shards, rows, pack, ...).
     """
     out = Path(out)
     med_cfg = IGSM_MED if med_cfg is None else med_cfg
@@ -352,9 +391,12 @@ def generate_to_dir(
                 pbar.update(batch_count)
                 continue
             streams = gen(batch_count, seed + b * workers)
-            windows = pack_sequences(streams, context_length=context_length)
-            if windows:
-                _write_shard_atomic(windows, _shard_path(out, b))
+            if pack:
+                rows = pack_sequences(streams, context_length=context_length)
+            else:
+                rows = streams  # raw problems (variable length); packed online at train time
+            if rows:
+                _write_shard_atomic(rows, _shard_path(out, b), require_uniform=pack)
             pbar.update(batch_count)
     finally:
         pbar.close()
@@ -362,20 +404,27 @@ def generate_to_dir(
             pool.shutdown(wait=True)
 
     shards = sorted(out.glob(f'{SHARD_PREFIX}*{SHARD_SUFFIX}'))
-    total_windows = _count_shard_rows(shards)
+    total_rows = _count_shard_rows(shards)
     stats = {
         'out': str(out),
         'split': split,
         'num_problems': num_problems,
         'num_batches': num_batches,
         'shards': len(shards),
-        'windows': total_windows,
-        'context_length': context_length,
+        'rows': total_rows,
+        'pack': pack,
+        'context_length': context_length if pack else None,
     }
-    typer.echo(
-        f'  {num_problems} problems -> {len(shards)} shards, {total_windows} packed windows '
-        f'of length {context_length} at {out}'
-    )
+    if pack:
+        typer.echo(
+            f'  {num_problems} problems -> {len(shards)} shards, {total_rows} packed windows '
+            f'of length {context_length} at {out}'
+        )
+    else:
+        typer.echo(
+            f'  {num_problems} problems -> {len(shards)} shards, {total_rows} raw problems at '
+            f'{out} (pack online at train time)'
+        )
     typer.echo(
         '  note: paper trains 100k steps x batch 512 ~= 51M windows; this finite dataset is '
         'cycled over epochs for the working version.'
@@ -395,12 +444,13 @@ def generate(
         int, typer.Option('--num-problems', help='Number of iGSM problems to generate.')
     ] = 200_000,
     context_length: Annotated[
-        int, typer.Option('--context-length', help='Packed window length.')
+        int, typer.Option('--context-length', help='Packed window length (only with --pack).')
     ] = DEFAULT_CONTEXT_LENGTH,
     batch_size: Annotated[
         int,
         typer.Option(
-            '--batch-size', help='Problems per shard (smaller = finer progress / smaller loss).'
+            '--batch-size',
+            help='Problems per shard. With --raw, more shards = better streaming parallelism.',
         ),
     ] = DEFAULT_BATCH_SIZE,
     workers: Annotated[int, typer.Option('--workers', help='Parallel generation processes.')] = 8,
@@ -413,8 +463,16 @@ def generate(
     overwrite: Annotated[
         bool, typer.Option('--overwrite', help='Delete the output dir first and start fresh.')
     ] = False,
+    raw: Annotated[
+        bool,
+        typer.Option(
+            '--raw/--pack',
+            help='--raw: write unpacked problems (one row each) for online packing at train '
+            'time. --pack (default): pack into fixed context_length windows.',
+        ),
+    ] = False,
 ) -> None:
-    """Generate a packed iGSM-med dataset (resumable, batched, with a progress bar)."""
+    """Generate an iGSM-med dataset (resumable, batched, with a progress bar)."""
     generate_to_dir(
         out,
         num_problems,
@@ -424,6 +482,7 @@ def generate(
         seed=seed,
         context_length=context_length,
         overwrite=overwrite,
+        pack=not raw,
     )
 
 

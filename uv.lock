@@ -1876,6 +1876,7 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformer-lens" },
     { name = "transformers" },
+    { name = "trl" },
     { name = "typer" },
     { name = "wandb" },
 ]
@@ -1909,6 +1910,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66" },
     { name = "transformer-lens", specifier = ">=3.2.1" },
     { name = "transformers", specifier = ">=5" },
+    { name = "trl", specifier = ">=1.7.0" },
     { name = "typer", specifier = ">=0.25.1" },
     { name = "wandb", specifier = ">=0.28.0" },
 ]
@@ -2849,6 +2851,22 @@ version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f5/3a/e991574f3102147b642e49637e0281e9bb7c4ba254edb2bab78247c85e01/triton-3.5.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c9e71db82261c4ffa3921cd050cd5faa18322d2d405c30eb56084afaff3b0833", size = 170476535, upload-time = "2025-10-13T16:38:05.18Z" },
+]
+
+[[package]]
+name = "trl"
+version = "1.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "datasets" },
+    { name = "jinja2" },
+    { name = "packaging" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/41/83/82ac8591ebefbdfec60d643e5473bb0a138f2b7dc94bf30c54777c3e78b3/trl-1.7.0.tar.gz", hash = "sha256:c22b6b59f919abf327ccae7bbec4ec8df308bc8b0df9de7f4bf1b8bdcd960947", size = 687760, upload-time = "2026-06-25T22:47:22.022Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8a/1f/470d5f68d4056604e7acf56b8a42693a94d4890f423557ea1eea5c0d2589/trl-1.7.0-py3-none-any.whl", hash = "sha256:097358a35caec99477d9fcc5284bcf349319fca1e6e507e8f7efa3988e23727a", size = 838829, upload-time = "2026-06-25T22:47:19.91Z" },
 ]
 
 [[package]]
