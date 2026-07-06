@@ -137,6 +137,25 @@ def train(
         bool, typer.Option('--no-eval', help='Disable validation entirely.')
     ] = False,
     attn_implementation: Annotated[str, typer.Option('--attn-implementation')] = 'sdpa',
+    torch_compile: Annotated[
+        bool,
+        typer.Option('--torch-compile', help='torch.compile the model (inductor) for speed.'),
+    ] = False,
+    resume_from_checkpoint: Annotated[
+        Path | None,
+        typer.Option(
+            '--resume-from-checkpoint',
+            help='Path to a checkpoint-N dir to resume from (restores model/optimizer/step).',
+        ),
+    ] = None,
+    resume: Annotated[
+        bool,
+        typer.Option(
+            '--resume',
+            help='Auto-resume from the latest checkpoint in --output-dir (ignored if '
+            '--resume-from-checkpoint is given).',
+        ),
+    ] = False,
     report_to: Annotated[list[str] | None, typer.Option('--report-to')] = None,
     seed: Annotated[int, typer.Option('--seed')] = 0,
     smoke: Annotated[
@@ -169,6 +188,7 @@ def train(
         max_eval_samples = 16  # don't iterate all val windows on CPU
         per_device_eval_batch_size = 2
         eval_steps = max_steps  # = 4 -> eval runs once during training, plus the final one
+        torch_compile = False  # enable quick test by avoiding compile
     else:
         config = build_gpt2_config(
             vocab_size=VOCAB_SIZE,
@@ -226,6 +246,7 @@ def train(
         lr_scheduler_type='cosine_with_min_lr',
         lr_scheduler_kwargs={'min_lr_rate': 0.01},
         bf16=bf16,
+        torch_compile=torch_compile,
         gradient_checkpointing=gradient_checkpointing,
         logging_steps=logging_steps,
         logging_first_step=True,
@@ -252,8 +273,17 @@ def train(
         data_collator=make_collator(train_dataset.length),
         callbacks=callbacks,
     )
+    # Resume: explicit checkpoint path wins; else --resume auto-finds the latest in output_dir.
+    resume_arg: str | bool | None = None
+    if resume_from_checkpoint is not None:
+        resume_arg = str(resume_from_checkpoint)
+        typer.echo(f'Resuming from {resume_arg}')
+    elif resume:
+        resume_arg = True
+        typer.echo(f'Resuming from latest checkpoint in {output_dir}')
+
     typer.echo('Starting training...')
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_arg)
     if eval_dataset is not None:
         final_metrics = trainer.evaluate()
         typer.echo(f'Final validation: loss={final_metrics["eval_loss"]:.4f}')
