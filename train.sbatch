@@ -1,15 +1,16 @@
 #!/bin/bash
-# Full training: GPT-2 + RoPE on iGSM-med, 100k steps, 3x A100-80GB (gruenau9/10).
+# Full training: GPT-2 + RoPE on iGSM-med, 100k steps, 3x A100-80GB.
 # Submit from the repo root:  sbatch train.sbatch
 # Resume after a kill/timeout:  sbatch --export=ALL,RESUME=1 train.sbatch
 
 #SBATCH --job-name=igsm-gpt2-rope
 #SBATCH --partition=longgpu
 #SBATCH --nodes=1                        # one node, 3 GPUs on it (DDP within the box)
-#SBATCH --gres=gpu:a10080gb:3            # 3x A100-80GB -- only gruenau9/10
+#SBATCH --gres=gpu:a10080gb:3            # 3x A100-80GB
 #SBATCH --cpus-per-task=8                # dataloader workers + generation headroom
-#SBATCH --mem=32G                        # streaming: only shuffle buffer + prefetch in RAM
-#SBATCH --time=4-00:00:00                # 4 days; raise if `sinfo -p longgpu` allows more
+#SBATCH --mem=96G                        # 3 ranks share this node; each needs dataloader buffers,
+                                         # pinned memory, and a torch.compile spike at step 0
+#SBATCH --time=4-00:00:00                # 4 days
 #SBATCH --output=train-%j.log            # %j = job id; live view with `tail -f`
 
 set -euo pipefail
