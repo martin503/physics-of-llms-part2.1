@@ -16,8 +16,9 @@ set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 
 # SLURM already sets CUDA_VISIBLE_DEVICES to the 3 allocated GPUs
-export WANDB_ENTITY=m6rcin53-marcin-mazur
-export WANDB_PROJECT=physics_of_llms
+export WANDB_ENTITY=physics_of_lms2-1_collab
+export WANDB_PROJECT=physics_of_lms2.1
+export WANDB_MODE=offline
 
 # Optional resume: `sbatch --export=ALL,RESUME=1 train.sbatch` picks up the latest checkpoint.
 RESUME_FLAG=""
@@ -26,7 +27,7 @@ if [ "${RESUME:-0}" = "1" ]; then
 fi
 
 # run with eval and WandB logging on 3 GPUs
-uv run accelerate launch --num_processes 3 \
+uv run accelerate launch --num_processes 3 --mixed_precision bf16 \
     -m src.train.gpt --report-to wandb \
     --max-steps 100_000 --logging-steps 1_000 --save-steps 10_000 \
     --eval-data-dir data/igsm_val --eval-steps 1000 --max-eval-samples 2000 \

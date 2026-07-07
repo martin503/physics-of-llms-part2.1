@@ -16,7 +16,7 @@ set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 
 # Single process, no wandb, no eval, no torch.compile (compile warmup dwarfs a 20-step run).
-uv run accelerate launch --num_processes 1 \
+uv run accelerate launch --num_processes 1 --mixed_precision bf16 \
     -m src.train.gpt --stream \
     --max-steps 20 --warmup-steps 20 \
     --gradient-accumulation-steps 2 --no-eval \
