@@ -34,19 +34,26 @@ from src.model.gpt2_rope import build_gpt2_config, build_gpt2_rope
 
 
 class PackedDataset(TorchDataset):
-    """Thin ``torch.Dataset`` view over a pre-gen HF dataset's ``input_ids`` column."""
+    """Lazy, arrow-backed view over a pre-gen HF dataset's ``input_ids`` column.
+
+    Indexes the underlying (arrow) table one row at a time instead of materializing the
+    whole column as a Python list-of-lists. That list copy costs ~5x the arrow footprint
+    (each token becomes a ~28-byte Python int) and is duplicated per DDP rank, which for a
+    large packed set blows past the node's RAM budget. Row-length uniformity is guaranteed
+    at write time (``_write_shard_atomic(require_uniform=True)``) and re-checked every step
+    by the collator, so no O(n) startup scan is needed here.
+    """
 
     def __init__(self, hf_dataset: Any) -> None:
-        self.input_ids: list[list[int]] = hf_dataset['input_ids']
-        assert self.input_ids, 'dataset is empty'
-        self.length = len(self.input_ids[0])
-        assert all(len(row) == self.length for row in self.input_ids), 'non-uniform window lengths'
+        self.ds = hf_dataset
+        assert len(self.ds) > 0, 'dataset is empty'
+        self.length = len(self.ds[0]['input_ids'])
 
     def __len__(self) -> int:
-        return len(self.input_ids)
+        return len(self.ds)
 
     def __getitem__(self, idx: int) -> dict[str, list[int]]:
-        return {'input_ids': self.input_ids[idx]}
+        return {'input_ids': self.ds[idx]['input_ids']}
 
 
 def make_collator(context_length: int):
