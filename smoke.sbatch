@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pre-flight smoke test: real GPU path, 20 steps, 1 A100. Confirms the model trains and
-# (crucially) that the dataset loads within memory on a compute node before the 4-day run.
+# (crucially) that the streaming data path works on a compute node before the 4-day run.
 # Submit from the repo root:  sbatch smoke.sbatch   (then: tail -f smoke-<JOBID>.log)
 
 #SBATCH --job-name=igsm-smoke
@@ -8,7 +8,7 @@
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:a10080gb:1             # 1 A100 is enough for a smoke test
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=96G                         # 1 rank: ~1x decoded arrow (~30-60G) + headroom
+#SBATCH --mem=16G                         # streaming: only shuffle buffer + prefetch in RAM
 #SBATCH --time=0:30:00
 #SBATCH --output=smoke-%j.log
 
@@ -17,7 +17,7 @@ cd "$SLURM_SUBMIT_DIR"
 
 # Single process, no wandb, no eval, no torch.compile (compile warmup dwarfs a 20-step run).
 uv run accelerate launch --num_processes 1 \
-    -m src.train.gpt \
+    -m src.train.gpt --stream \
     --max-steps 20 --warmup-steps 20 \
     --gradient-accumulation-steps 2 --no-eval \
     --output-dir models/smoke \

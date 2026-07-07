@@ -8,8 +8,7 @@
 #SBATCH --nodes=1                        # one node, 3 GPUs on it (DDP within the box)
 #SBATCH --gres=gpu:a10080gb:3            # 3x A100-80GB -- only gruenau9/10
 #SBATCH --cpus-per-task=8                # dataloader workers + generation headroom
-#SBATCH --mem=256G                       # ~33% of 772G node: ~3x decoded arrow (~30-60G/rank)
-                                         # + headroom; stays under the cluster's 50%-RAM policy
+#SBATCH --mem=32G                        # streaming: only shuffle buffer + prefetch in RAM
 #SBATCH --time=4-00:00:00                # 4 days; raise if `sinfo -p longgpu` allows more
 #SBATCH --output=train-%j.log            # %j = job id; live view with `tail -f`
 
@@ -31,6 +30,6 @@ uv run accelerate launch --num_processes 3 \
     -m src.train.gpt --report-to wandb \
     --max-steps 100_000 --logging-steps 1_000 --save-steps 10_000 \
     --eval-data-dir data/igsm_val --eval-steps 1000 --max-eval-samples 2000 \
-    --gradient-accumulation-steps 11 --torch-compile \
+    --gradient-accumulation-steps 11 --torch-compile --stream \
     --data-dir ../../../../../tmp/josebast_igsm_data/data/igsm_train_117M \
     $RESUME_FLAG

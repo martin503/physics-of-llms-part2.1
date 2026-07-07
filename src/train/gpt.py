@@ -29,19 +29,22 @@ from transformers import (
     TrainingArguments,
 )
 
-from src.data.igsm import DEFAULT_CONTEXT_LENGTH, VOCAB_SIZE, load_igsm_dataset
+from src.data.igsm import (
+    DEFAULT_CONTEXT_LENGTH,
+    VOCAB_SIZE,
+    load_igsm_dataset,
+    load_igsm_stream,
+)
 from src.model.gpt2_rope import build_gpt2_config, build_gpt2_rope
 
 
 class PackedDataset(TorchDataset):
-    """Lazy, arrow-backed view over a pre-gen HF dataset's ``input_ids`` column.
+    """Map-style view over a pre-generated HF dataset's ``input_ids`` column.
 
-    Indexes the underlying (arrow) table one row at a time instead of materializing the
-    whole column as a Python list-of-lists. That list copy costs ~5x the arrow footprint
-    (each token becomes a ~28-byte Python int) and is duplicated per DDP rank, which for a
-    large packed set blows past the node's RAM budget. Row-length uniformity is guaranteed
-    at write time (``_write_shard_atomic(require_uniform=True)``) and re-checked every step
-    by the collator, so no O(n) startup scan is needed here.
+    Indexes the arrow table one row at a time to avoid materializing the whole column as a
+    Python list-of-lists, which would cost ~5x the arrow footprint and be duplicated per DDP
+    rank. All windows share one length (enforced at write time, re-checked by the collator),
+    so reading row 0 is enough to learn it.
     """
 
     def __init__(self, hf_dataset: Any) -> None:
@@ -70,29 +73,33 @@ def make_collator(context_length: int):
 
 
 class LogSampleCallback(TrainerCallback):
-    """Periodically decode+log one packed window to W&B for sanity inspection."""
+    """
+    Periodically decode and log one packed window to W&B for sanity inspection.
 
-    def __init__(self, tokenizer: GPT2TokenizerFast, every: int = 500) -> None:
+    Iterates the dataset object (not the training dataloader) and caches the first window it
+    yields, so logging never consumes a training batch. Works for both the map-style and
+    streaming datasets.
+    """
+
+    def __init__(self, tokenizer: GPT2TokenizerFast, dataset: Any, every: int = 500) -> None:
         self.tokenizer = tokenizer
+        self.dataset = dataset
         self.every = every
-        self._sample: torch.Tensor | None = None
+        self._sample: list[int] | None = None
 
-    def on_step_end(self, args, state, control, train_dataloader=None, **kwargs) -> None:  # noqa: ARG002
+    def on_step_end(self, args, state, control, **kwargs) -> None:  # noqa: ARG002
         if not state.is_world_process_zero:
             return
         if state.global_step == 0 or state.global_step % self.every != 0:
             return
-        if self._sample is None and train_dataloader is not None:
+        if self._sample is None:  # fetch+cache one window on first log (rank 0 only)
             try:
-                self._sample = next(iter(train_dataloader))['input_ids']
-            except Exception:  # noqa: BLE001 -- degrade silently if a batch can't be pulled
-                self._sample = None
+                self._sample = next(iter(self.dataset))['input_ids']
+            except Exception:  # noqa: BLE001 -- degrade silently if a sample can't be pulled
                 return
-        if self._sample is None:
-            return
         import wandb
 
-        text = self.tokenizer.decode(self._sample[0], skip_special_tokens=False)
+        text = self.tokenizer.decode(self._sample, skip_special_tokens=False)
         wandb.log(
             {'train/sample_text': wandb.Html(f'<pre>{text[:2000]}</pre>')},
             step=state.global_step,
@@ -144,6 +151,23 @@ def train(
         bool, typer.Option('--no-eval', help='Disable validation entirely.')
     ] = False,
     attn_implementation: Annotated[str, typer.Option('--attn-implementation')] = 'sdpa',
+    stream: Annotated[
+        bool,
+        typer.Option(
+            '--stream',
+            help='Stream packed shards lazily (constant RAM) instead of loading all into '
+            'memory. Required for datasets too large to fit in RAM (e.g. the 51M-window set).',
+        ),
+    ] = False,
+    shuffle_buffer: Annotated[
+        int,
+        typer.Option(
+            '--shuffle-buffer',
+            help='Shuffle-buffer size (windows) for --stream. Shards are block-structured by '
+            'difficulty, so the buffer must span several blocks to mix; see '
+            'docs/data_generation.md.',
+        ),
+    ] = 10_000,
     torch_compile: Annotated[
         bool,
         typer.Option('--torch-compile', help='torch.compile the model (inductor) for speed.'),
@@ -213,10 +237,20 @@ def train(
     if bf16 and attn_implementation == "flash_attention_2":
         model.to(torch.bfloat16)
 
-    typer.echo(f'Loading packed dataset from {data_dir}...')
-    hf_dataset = load_igsm_dataset(data_dir)
-    train_dataset = PackedDataset(hf_dataset)
-    typer.echo(f'  {len(train_dataset)} examples of length {train_dataset.length}')
+    # Collator needs the fixed window length. Map-style reads it off the data; the stream is
+    # lazy (no __len__), so trust --context-length (shards are packed to DEFAULT_CONTEXT_LENGTH).
+    if stream:
+        typer.echo(f'Streaming packed shards from {data_dir} (buffer={shuffle_buffer})...')
+        train_dataset: Any = load_igsm_stream(data_dir).shuffle(
+            seed=seed, buffer_size=shuffle_buffer
+        )
+        collator_length = context_length
+    else:
+        typer.echo(f'Loading packed dataset from {data_dir}...')
+        hf_dataset = load_igsm_dataset(data_dir)
+        train_dataset = PackedDataset(hf_dataset)
+        collator_length = train_dataset.length
+        typer.echo(f'  {len(train_dataset)} examples of length {train_dataset.length}')
 
     eval_dataset: PackedDataset | None = None
     if no_eval:
@@ -235,7 +269,9 @@ def train(
     if 'wandb' in report_to and not smoke:
         try:
             tokenizer = GPT2TokenizerFast.from_pretrained('gpt2')
-            callbacks.append(LogSampleCallback(tokenizer, every=max(500, logging_steps)))
+            callbacks.append(
+                LogSampleCallback(tokenizer, train_dataset, every=max(500, logging_steps))
+            )
         except Exception as e:  # noqa: BLE001 -- tokenizer download may fail offline
             typer.echo(f'  (skipping sample logging: {e})')
 
@@ -267,6 +303,7 @@ def train(
         # Frozen unused wpe is invisible to DDP (requires_grad=False), so False is safe.
         ddp_find_unused_parameters=False,
         dataloader_num_workers=dataloader_num_workers,
+        dataloader_persistent_workers=stream and dataloader_num_workers > 0,
         remove_unused_columns=False,
         seed=seed,
         use_cpu=smoke,
@@ -277,7 +314,7 @@ def train(
         args=args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        data_collator=make_collator(train_dataset.length),
+        data_collator=make_collator(collator_length),
         callbacks=callbacks,
     )
     # Resume: explicit checkpoint path wins; else --resume auto-finds the latest in output_dir.
