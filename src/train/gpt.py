@@ -104,6 +104,7 @@ def train(
         Path, typer.Option('--output-dir', help='Where to write checkpoints.')
     ] = Path('models/gpt2-rope-igsm'),
     context_length: Annotated[int, typer.Option('--context-length')] = DEFAULT_CONTEXT_LENGTH,
+    dataloader_num_workers: Annotated[int, typer.Option('--dataloader-num-workers')] = 4,
     per_device_train_batch_size: Annotated[int, typer.Option('--per-device-train-batch-size')] = 16,
     gradient_accumulation_steps: Annotated[
         int, typer.Option('--gradient-accumulation-steps')
@@ -174,7 +175,7 @@ def train(
             vocab_size=VOCAB_SIZE,
             n_positions=max(2048, context_length),
         )
-        dataloader_num_workers = 2
+        dataloader_num_workers = dataloader_num_workers
 
     typer.echo(
         f'Building GPT-2 + RoPE ({"smoke" if smoke else "12-12"}): '
@@ -226,6 +227,7 @@ def train(
         lr_scheduler_type='cosine_with_min_lr',
         lr_scheduler_kwargs={'min_lr_rate': 0.01},
         bf16=bf16,
+        torch_compile=True,
         gradient_checkpointing=gradient_checkpointing,
         logging_steps=logging_steps,
         logging_first_step=True,

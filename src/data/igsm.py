@@ -119,7 +119,7 @@ def _generate_chunk(
     from tools.tools import fix_seed  # type: ignore[import-not-found]
 
     fix_seed(seed)  # sets random + numpy seeds (NOT torch); per-worker seed -> distinct problems
-    gen = IdGen(**med_cfg)  # gen_prob mutates the instance, so one generator per worker
+    gen = IdGen(**med_cfg)  # gen_prob mutates the instance, so one generator per unit
     streams: list[list[int]] = []
     for _ in range(num_problems):
         gen.gen_prob(bins, p_format='pq')  # type: ignore[attr-defined]
@@ -130,14 +130,38 @@ def _generate_chunk(
     return streams
 
 
-def _worker_counts(num_problems: int, workers: int) -> list[int]:
-    """Split ``num_problems`` across ``workers`` as evenly as possible (drop zero counts)."""
+def _unit_counts(num_problems: int, unit: int) -> list[int]:
+    """Split ``num_problems`` into many small chunks of size ``unit`` (last may be smaller).
+
+    Produces many fine-grained units so a :class:`~concurrent.futures.ProcessPoolExecutor` can
+    **dynamically rebalance** work across processes. This matters because iGSM-med per-problem
+    generation time is heavy-tailed (~22 retries/problem; stragglers ~7x the median): one big
+    chunk per worker means a single unlucky chunk stalls the whole batch (barrier on ``max``),
+    collapsing parallel scaling and making throughput batch-size/noise-sensitive. Many small
+    units let fast workers absorb the slack, so wall time tracks the *average* rather than the
+    *max*.
+    """
     if num_problems <= 0:
         return []
-    counts = [
-        num_problems // workers + (1 if i < num_problems % workers else 0) for i in range(workers)
-    ]
-    return [c for c in counts if c > 0]
+    unit = max(1, unit)
+    n_full, rem = divmod(num_problems, unit)
+    return [unit] * n_full + ([rem] if rem else [])
+
+
+def _fine_unit(num_problems: int, workers: int) -> int:
+    """Pick a fine chunk size targeting ~8 rebalancing units per worker (capped to 1..256).
+
+    8 units/worker is enough for the pool to smooth out heavy-tailed stragglers without paying
+    excessive per-unit overhead (each unit spins up its own ``IdGen``). The 256 cap keeps even
+    very large batches finely grained (e.g. 20k problems -> ~79 units).
+    """
+    if num_problems <= 0:
+        return 1
+    if workers <= 1:
+        return num_problems
+    target_units = workers * 8
+    unit = num_problems // target_units
+    return max(1, min(256, unit or 1))
 
 
 def generate_problems(
@@ -153,16 +177,19 @@ def generate_problems(
     Spawns its own (short-lived) process pool -- convenient for one-shot use. For resumable
     batched generation use :func:`generate_to_dir`, which keeps a single persistent pool.
 
-    Each worker ``i`` is seeded ``seed + i`` (iGSM uses module-level RNG state, so distinct
-    process-level seeds are required to avoid duplicate problems).
+    Each unit ``j`` is seeded ``seed + j`` (iGSM uses module-level RNG state, so distinct
+    process-level seeds are required to avoid duplicate problems). Work is split into many
+    fine units (see :func:`_fine_unit`) so the pool rebalances heavy-tailed stragglers; with
+    ``workers <= 1`` generation runs inline in a single ``IdGen``.
     """
     med_cfg = IGSM_MED if med_cfg is None else med_cfg
     bins = get_bins(split)
     if workers <= 1 or num_problems <= 0:
         return _generate_chunk(max(num_problems, 0), seed, bins, med_cfg)
 
-    counts = _worker_counts(num_problems, workers)
-    tasks = [(c, seed + i, bins, med_cfg) for i, c in enumerate(counts)]
+    unit = _fine_unit(num_problems, workers)
+    counts = _unit_counts(num_problems, unit)
+    tasks = [(c, seed + j, bins, med_cfg) for j, c in enumerate(counts)]
 
     streams: list[list[int]] = []
     with ProcessPoolExecutor(max_workers=workers, initializer=ensure_igsm_submodule) as pool:
@@ -178,13 +205,25 @@ def _generate_batch_in_pool(
     base_seed: int,
     bins: list[int],
     med_cfg: dict[str, Any],
+    *,
+    unit: int | None = None,
 ) -> list[list[int]]:
-    """Generate one batch's problems on a *persistent* pool (workers reuse the IdGen import)."""
+    """Generate one batch's problems on a *persistent* pool (workers reuse the IdGen import).
+
+    Work is split into many fine units (``unit`` problems each; auto-sized via
+    :func:`_fine_unit` when omitted) and submitted at once so the pool **dynamically
+    rebalances** across its ``workers`` processes. Each unit ``j`` is seeded ``base_seed + j``;
+    the caller must pass ``base_seed`` values spaced by at least the number of units per batch
+    (see the stride computed in :func:`generate_to_dir`) so seeds are globally unique and
+    duplicate-free across batches.
+    """
     if num_problems <= 0:
         return []
-    counts = _worker_counts(num_problems, workers)
+    if unit is None:
+        unit = _fine_unit(num_problems, workers)
+    counts = _unit_counts(num_problems, unit)
     futures = [
-        pool.submit(_generate_chunk, c, base_seed + i, bins, med_cfg) for i, c in enumerate(counts)
+        pool.submit(_generate_chunk, c, base_seed + j, bins, med_cfg) for j, c in enumerate(counts)
     ]
     streams: list[list[int]] = []
     for f in futures:
@@ -342,8 +381,9 @@ def generate_to_dir(
             smaller interrupt loss, and (for ``pack=False``) more files for better streaming
             parallelism; larger -> fewer files.
         workers: Parallel generation processes (one persistent pool for all batches).
-        seed: Base RNG seed. Batch ``b`` worker ``i`` uses ``seed + b*workers + i`` (globally
-            unique -> resumable and duplicate-free).
+        seed: Base RNG seed. Batch ``b`` unit ``j`` uses ``seed + b*stride + j`` (globally
+            unique -> resumable and duplicate-free), where ``stride`` = units per batch
+            (``ceil(batch_size / unit)``).
         context_length: Packed window length. Only used when ``pack=True`` (ignored otherwise).
         med_cfg: iGSM-med config (defaults to :data:`IGSM_MED`).
         overwrite: If True, delete ``out`` first and start from scratch.
@@ -371,6 +411,12 @@ def generate_to_dir(
     if resumed:
         typer.echo(f'Resuming: {resumed}/{num_batches} batches already complete.')
 
+    # Fine-grained work units so the pool rebalances heavy-tailed generation stragglers
+    # (see _unit_counts / _fine_unit). `stride` = units per full batch, used to keep per-unit
+    # seeds globally unique across batches (seed + b*stride + j).
+    unit = _fine_unit(batch_size, workers)
+    stride = len(_unit_counts(batch_size, unit))
+
     bins = get_bins(split)
     pbar = tqdm(total=num_problems, desc=f'gen iGSM-{split}', unit='prob', dynamic_ncols=True)
 
@@ -379,7 +425,7 @@ def generate_to_dir(
             return problem_generator(
                 num_problems=num, split=split, workers=workers, seed=base_seed, med_cfg=med_cfg
             )
-        return _generate_batch_in_pool(pool, num, workers, base_seed, bins, med_cfg)
+        return _generate_batch_in_pool(pool, num, workers, base_seed, bins, med_cfg, unit=unit)
 
     pool: ProcessPoolExecutor | None = None
     if problem_generator is None:
@@ -390,7 +436,7 @@ def generate_to_dir(
             if b in done:
                 pbar.update(batch_count)
                 continue
-            streams = gen(batch_count, seed + b * workers)
+            streams = gen(batch_count, seed + b * stride)
             if pack:
                 rows = pack_sequences(streams, context_length=context_length)
             else:

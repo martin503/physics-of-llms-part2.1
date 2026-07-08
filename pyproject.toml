@@ -28,6 +28,7 @@ dependencies = [
     "psutil>=7.2.2",
     "inspect-ai>=0.3.241",
     "trl>=1.7.0",
+    "liger-kernel>=0.8.0",
 ]
 
 [dependency-groups]

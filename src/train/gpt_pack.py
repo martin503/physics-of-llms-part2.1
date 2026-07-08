@@ -48,7 +48,7 @@ from src.data.igsm import VOCAB_SIZE, generate_problems, load_igsm_stream
 from src.data.igsm_stream import build_igsm_stream, seed_offsets_for_shards
 from src.model.gpt2_rope import build_gpt2_config, build_gpt2_rope
 
-DEFAULT_CONTEXT_LENGTH = 12_288
+DEFAULT_CONTEXT_LENGTH = 768
 
 
 def _world_size() -> int:
@@ -107,7 +107,7 @@ def train(
     context_length: Annotated[
         int, typer.Option('--context-length', help='Packed window length (TRL max_length).')
     ] = DEFAULT_CONTEXT_LENGTH,
-    per_device_train_batch_size: Annotated[int, typer.Option('--per-device-train-batch-size')] = 1,
+    per_device_train_batch_size: Annotated[int, typer.Option('--per-device-train-batch-size')] = 16,
     gradient_accumulation_steps: Annotated[
         int, typer.Option('--gradient-accumulation-steps')
     ] = 16,
@@ -124,8 +124,14 @@ def train(
         bool, typer.Option('--bf16/--no-bf16', help='bf16 on Ampere/3090 (paper used fp16).')
     ] = True,
     gradient_checkpointing: Annotated[
-        bool, typer.Option('--gradient-checkpointing', help='Recommended at long context.')
-    ] = True,
+        bool,
+        typer.Option(
+            '--gradient-checkpointing',
+            help='Recompute forward in backward (~+33%% compute). Only worth it at long context '
+            'where activations don\'t fit; at the default ctx=768 a 124M model fits easily, so '
+            'this is off by default -- enabling it costs ~1.5 s/step for nothing here.',
+        ),
+    ] = False,
     logging_steps: Annotated[int, typer.Option('--logging-steps')] = 20,
     save_steps: Annotated[int, typer.Option('--save-steps')] = 1_000,
     per_device_eval_batch_size: Annotated[int, typer.Option('--per-device-eval-batch-size')] = 1,
@@ -145,6 +151,37 @@ def train(
             help='bfd packing isolates packed samples only with flash_attention_2.',
         ),
     ] = 'flash_attention_2',
+    loss_type: Annotated[
+        str,
+        typer.Option(
+            '--loss-type',
+            help="TRL loss: 'nll' (one big lm_head + CE) or 'chunked_nll' (CE in 256-token "
+            "chunks). TRL defaults to 'chunked_nll' to save activation memory at huge scale, but "
+            "here its 256-row matmuls are launch/tiling-bound and add ~3 s/step vs 'nll' -- so we "
+            "default to 'nll' (identical math, VRAM is plentiful for a 124M model at ctx=768).",
+        ),
+    ] = 'nll',
+    torch_compile: Annotated[
+        bool,
+        typer.Option(
+            '--torch-compile/--no-torch-compile',
+            help='OFF by default: torch.compile is INCOMPATIBLE with TRL padding-free varlen '
+            'packing -- it graph-breaks on flash-varlen `max_seqlen.item()`, recompiles per layer '
+            'on `module.layer_idx`, and recompiles on every distinct flat sequence length (the '
+            'bfd padding-free collator emits variable-length (1, T) batches). Result: constant '
+            'recompilation, ~8x SLOWER (52 s/step vs 6.5 s/step). `src.train.gpt` can compile '
+            'because it uses fixed (B, 768) sdpa shapes; this path cannot.',
+        ),
+    ] = False,
+    use_liger_kernel: Annotated[
+        bool,
+        typer.Option(
+            '--use-liger-kernel/--no-liger-kernel',
+            help='Fuse lm_head + cross-entropy (no full logits materialized). A small ~8%% '
+            'speedup when on, but our custom GPT2-RoPE patcher does not expose token_accuracy, '
+            'so `mean_token_accuracy` is not logged (cosmetic). Off by default for clean metrics.',
+        ),
+    ] = False,
     dataloader_num_workers: Annotated[
         int, typer.Option('--dataloader-num-workers', help='Parallel on-the-fly generators.')
     ] = 4,
@@ -274,6 +311,8 @@ def train(
         eval_steps=eval_steps,
         per_device_eval_batch_size=per_device_eval_batch_size,
         report_to=report_to,
+        torch_compile=torch_compile,
+        use_liger_kernel=use_liger_kernel,
         # Frozen unused wpe is invisible to DDP (requires_grad=False), so False is safe.
         ddp_find_unused_parameters=False,
         dataloader_num_workers=dataloader_num_workers,
@@ -287,6 +326,9 @@ def train(
         packing_strategy='bfd',
         max_length=context_length,
         eval_packing=True,
+        # 'nll' (not TRL's 'chunked_nll' default): chunked_nll's 256-token lm_head chunks are
+        # launch-bound here and cost ~3 s/step; 'nll' is the same math in one efficient matmul.
+        loss_type=loss_type,
         # padding_free is auto-forced by packing + bfd (sft_trainer.py), so the collator
         # emits reset position_ids and omits attention_mask -> FlashAttention builds
         # cu_seq_lens from the resets to block cross-problem attention.
