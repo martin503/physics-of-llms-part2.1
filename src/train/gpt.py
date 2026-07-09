@@ -105,7 +105,9 @@ def train(
     ] = Path('models/gpt2-rope-igsm'),
     context_length: Annotated[int, typer.Option('--context-length')] = DEFAULT_CONTEXT_LENGTH,
     dataloader_num_workers: Annotated[int, typer.Option('--dataloader-num-workers')] = 4,
-    per_device_train_batch_size: Annotated[int, typer.Option('--per-device-train-batch-size')] = 16,
+    per_device_train_batch_size: Annotated[
+        int, typer.Option('--per-device-train-batch-size')
+    ] = 16,
     gradient_accumulation_steps: Annotated[
         int, typer.Option('--gradient-accumulation-steps')
     ] = 16,
@@ -181,10 +183,10 @@ def train(
         f'Building GPT-2 + RoPE ({"smoke" if smoke else "12-12"}): '
         f'{config.num_hidden_layers}L {config.n_embd}d {config.num_attention_heads}h'
     )
-    if bf16 and attn_implementation == "flash_attention_2":
+    if bf16 and attn_implementation == 'flash_attention_2':
         config.dtype = torch.bfloat16
     model = build_gpt2_rope(config, attn_implementation=attn_implementation)
-    if bf16 and attn_implementation == "flash_attention_2":
+    if bf16 and attn_implementation == 'flash_attention_2':
         model.to(torch.bfloat16)
 
     typer.echo(f'Loading packed dataset from {data_dir}...')

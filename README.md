@@ -43,7 +43,6 @@ uv run python -m src.data.igsm generate --split train --num-problems 300000 --wo
 ```
 300000 problems -> 3 shards, 131421 packed windows of length 768 at data/igsm_train_100k
   note: paper trains 100k steps x batch 512 ~= 51M windows; this finite dataset is cycled over epochs for the working version.
-and it took 1h, so it would take whole day on my pc to generate it.
 
 ### Eval
 

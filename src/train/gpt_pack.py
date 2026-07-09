@@ -107,7 +107,9 @@ def train(
     context_length: Annotated[
         int, typer.Option('--context-length', help='Packed window length (TRL max_length).')
     ] = DEFAULT_CONTEXT_LENGTH,
-    per_device_train_batch_size: Annotated[int, typer.Option('--per-device-train-batch-size')] = 16,
+    per_device_train_batch_size: Annotated[
+        int, typer.Option('--per-device-train-batch-size')
+    ] = 16,
     gradient_accumulation_steps: Annotated[
         int, typer.Option('--gradient-accumulation-steps')
     ] = 16,
@@ -128,7 +130,7 @@ def train(
         typer.Option(
             '--gradient-checkpointing',
             help='Recompute forward in backward (~+33%% compute). Only worth it at long context '
-            'where activations don\'t fit; at the default ctx=768 a 124M model fits easily, so '
+            "where activations don't fit; at the default ctx=768 a 124M model fits easily, so "
             'this is off by default -- enabling it costs ~1.5 s/step for nothing here.',
         ),
     ] = False,
