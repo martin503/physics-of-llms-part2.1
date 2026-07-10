@@ -26,7 +26,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import typer
 
-from src.data.igsm import pack_sequences
+from src.data.igsm import EOS, pack_sequences
 
 SHARD_PREFIX = 'batch_'
 SHARD_SUFFIX = '.parquet'
@@ -41,6 +41,21 @@ def _load_streams(input_dir: Path, column: str, pattern: str) -> list[list[int]]
     for f in files:
         streams.extend(pq.read_table(f).column(column).to_pylist())
     return streams
+
+
+def pack_single(streams: list[list[int]], context_length: int) -> list[list[int]]:
+    """One problem per window, right-padded with EOS tokens to ``context_length``.
+
+    Problems longer than ``context_length`` are dropped (they cannot fit a single
+    window).  All output windows are exactly ``context_length`` tokens, so the packed
+    dir is a drop-in replacement for the normal training data dir.
+    """
+    windows: list[list[int]] = []
+    for s in streams:
+        total = len(s) + 1  # +1 for the leading EOS (BOS stand-in)
+        if total <= context_length:
+            windows.append([EOS] + s + [EOS] * (context_length - total))
+    return windows
 
 
 def _write_shards(windows: list[list[int]], out: Path, shard_size: int) -> int:
@@ -85,26 +100,47 @@ def pack(
     shard_size: Annotated[
         int, typer.Option('--shard-size', help='Windows per output shard.')
     ] = 100_000,
+    mode: Annotated[
+        str,
+        typer.Option(
+            '--mode',
+            help='packed = concatenate+chunk (default); single = one problem per window, EOS-padded.',
+        ),
+    ] = 'packed',
 ) -> None:
     """Shuffle eval problems and pack them into fixed-length training windows."""
+    if mode not in ('packed', 'single'):
+        raise typer.BadParameter(f'--mode must be "packed" or "single", got {mode!r}')
     streams = _load_streams(input_dir, column, include)
     lengths = [len(s) for s in streams]
     random.Random(seed).shuffle(streams)
-    windows = pack_sequences(streams, context_length=context_length)
-    if not windows:
-        typer.echo(
-            f'  {len(streams)} problems but {sum(lengths)} total tokens < ctx {context_length}; '
-            f'nothing to pack. Lower --ctx.'
-        )
-        return
+    if mode == 'single':
+        windows = pack_single(streams, context_length)
+        dropped = len(streams) - len(windows)
+        if not windows:
+            typer.echo(
+                f'  {len(streams)} problems but all {dropped} exceed ctx {context_length}; '
+                f'nothing to pack. Raise --ctx.'
+            )
+            return
+    else:
+        windows = pack_sequences(streams, context_length=context_length)
+        dropped = 0
+        if not windows:
+            typer.echo(
+                f'  {len(streams)} problems but {sum(lengths)} total tokens < ctx {context_length}; '
+                f'nothing to pack. Lower --ctx.'
+            )
+            return
     n_shards = _write_shards(windows, output_dir, shard_size)
     typer.echo(
         f'  {len(streams)} problems (len min/median/max = '
         f'{min(lengths)}/{sorted(lengths)[len(lengths) // 2]}/{max(lengths)})'
     )
+    extra = f', dropped {dropped} > ctx' if dropped else ''
     typer.echo(
-        f'  -> shuffled (seed={seed}) -> {len(windows)} windows of len {context_length} '
-        f'in {n_shards} shard(s) at {output_dir}'
+        f'  -> shuffled (seed={seed}) -> {mode}: {len(windows)} windows of len {context_length}'
+        f'{extra} in {n_shards} shard(s) at {output_dir}'
     )
 
 

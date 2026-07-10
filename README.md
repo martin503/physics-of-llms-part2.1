@@ -46,4 +46,12 @@ uv run python -m src.data.igsm generate --split train --num-problems 300000 --wo
 
 ### Eval
 
-TODO, In progress
+To generate the data without reask run
+```
+uv run python -m src.data.eval --seed 0 --out data/igsm_eval  --no-reask
+```
+
+To run the eval on smallest set of problems
+```
+uv run python -m src.eval.run --model models/gpt2-rope-igsm/checkpoint-800 --slices med_pq_op_le15 --batch-size 64 --limit 512
+```
