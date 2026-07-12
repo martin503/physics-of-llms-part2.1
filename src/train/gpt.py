@@ -16,6 +16,7 @@ Examples::
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -29,7 +30,13 @@ from transformers import (
     TrainingArguments,
 )
 
-from src.data.igsm import DEFAULT_CONTEXT_LENGTH, VOCAB_SIZE, load_igsm_dataset
+from src.data.igsm import (
+    DEFAULT_CONTEXT_LENGTH,
+    SHARD_PREFIX,
+    SHARD_SUFFIX,
+    VOCAB_SIZE,
+    load_igsm_dataset,
+)
 from src.model.gpt2_rope import build_gpt2_config, build_gpt2_rope
 
 
@@ -60,6 +67,39 @@ def make_collator(context_length: int):
         return {'input_ids': input_ids, 'labels': input_ids.clone()}
 
     return collate
+
+
+def build_streaming_dataset(
+    data_dir: Path, *, seed: int, shuffle_buffer: int
+) -> tuple[Any, list[Path], list[Path]]:
+    """Stream packed parquet shards lazily as an HF ``IterableDataset``.
+
+    For train sets too large to fit in RAM. Shard files are split across DDP ranks
+    via ``WORLD_SIZE``/``RANK`` (set by ``accelerate launch`` / ``torchrun``), and the
+    ``datasets`` library sub-shards across DataLoader workers, so every (rank, worker)
+    pair streams a disjoint slice -- the streaming analogue of the map-style DDP shard
+    split, with no cross-rank duplication and no full-dataset load. Only the shuffle
+    buffer and in-flight batches are held in memory.
+
+    Returns ``(dataset, all_shard_files, rank_shard_files)``.
+    """
+    from datasets import load_dataset
+
+    files = sorted(data_dir.glob(f'{SHARD_PREFIX}*{SHARD_SUFFIX}'))
+    if not files:
+        raise FileNotFoundError(f'no {SHARD_PREFIX}*{SHARD_SUFFIX} shards at {data_dir}')
+    world = int(os.environ.get('WORLD_SIZE', '1'))
+    rank = int(os.environ.get('RANK', '0'))
+    rank_files = files[rank::world]
+    ds = load_dataset(
+        'parquet',
+        data_files={'train': [str(f) for f in rank_files]},
+        split='train',
+        streaming=True,
+    )
+    if shuffle_buffer and shuffle_buffer > 0:
+        ds = ds.shuffle(seed=seed, buffer_size=shuffle_buffer)
+    return ds, files, rank_files
 
 
 class LogSampleCallback(TrainerCallback):
@@ -100,6 +140,22 @@ def train(
     data_dir: Annotated[
         Path, typer.Option('--data-dir', help='Pre-gen packed iGSM dataset dir.')
     ] = Path('data/igsm_train'),
+    streaming: Annotated[
+        bool,
+        typer.Option(
+            '--streaming/--no-streaming',
+            help='Stream train shards lazily as an IterableDataset (for datasets too big '
+            'for RAM). Shards are split across DDP ranks; eval still loads in memory, so '
+            'keep the eval set small.',
+        ),
+    ] = False,
+    shuffle_buffer: Annotated[
+        int,
+        typer.Option(
+            '--shuffle-buffer',
+            help='Streaming shuffle buffer in windows (approximate shuffling); 0 disables.',
+        ),
+    ] = 0,
     output_dir: Annotated[
         Path, typer.Option('--output-dir', help='Where to write checkpoints.')
     ] = Path('models/gpt2-rope-igsm'),
@@ -202,9 +258,22 @@ def train(
         model.to(torch.bfloat16)
 
     typer.echo(f'Loading packed dataset from {data_dir}...')
-    hf_dataset = load_igsm_dataset(data_dir)
-    train_dataset = PackedDataset(hf_dataset)
-    typer.echo(f'  {len(train_dataset)} examples of length {train_dataset.length}')
+    if streaming:
+        train_dataset, all_shards, rank_shards = build_streaming_dataset(
+            data_dir, seed=seed, shuffle_buffer=shuffle_buffer
+        )
+        world = int(os.environ.get('WORLD_SIZE', '1'))
+        rank = int(os.environ.get('RANK', '0'))
+        typer.echo(
+            f'  streaming {len(all_shards)} shards; rank {rank}/{world} -> '
+            f'{len(rank_shards)} shards; shuffle_buffer={shuffle_buffer or "off"}'
+        )
+        window_length = context_length
+    else:
+        hf_dataset = load_igsm_dataset(data_dir)
+        train_dataset = PackedDataset(hf_dataset)
+        typer.echo(f'  {len(train_dataset)} examples of length {train_dataset.length}')
+        window_length = train_dataset.length
 
     eval_dataset: PackedDataset | None = None
     if no_eval:
@@ -221,11 +290,16 @@ def train(
 
     callbacks: list[TrainerCallback] = []
     if 'wandb' in report_to and not smoke:
-        try:
-            tokenizer = GPT2TokenizerFast.from_pretrained('gpt2')
-            callbacks.append(LogSampleCallback(tokenizer, every=max(500, logging_steps)))
-        except Exception as e:  # noqa: BLE001 -- tokenizer download may fail offline
-            typer.echo(f'  (skipping sample logging: {e})')
+        if streaming:
+            # LogSampleCallback re-iterates the train DataLoader for a sample, which is
+            # unsafe with a streaming IterableDataset -- so sample logging is disabled.
+            typer.echo('  (streaming: sample-text logging disabled)')
+        else:
+            try:
+                tokenizer = GPT2TokenizerFast.from_pretrained('gpt2')
+                callbacks.append(LogSampleCallback(tokenizer, every=max(500, logging_steps)))
+            except Exception as e:  # noqa: BLE001 -- tokenizer download may fail offline
+                typer.echo(f'  (skipping sample logging: {e})')
 
     args = TrainingArguments(
         output_dir=str(output_dir),
@@ -266,7 +340,7 @@ def train(
         args=args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        data_collator=make_collator(train_dataset.length),
+        data_collator=make_collator(window_length),
         callbacks=callbacks,
     )
     typer.echo('Starting training...')

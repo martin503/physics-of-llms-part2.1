@@ -1,3 +1,4 @@
 [submodule "iGSM"]
 	path = iGSM
 	url = org-16943930@github.com:facebookresearch/iGSM.git
+	ignore = untracked
