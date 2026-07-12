@@ -45,7 +45,7 @@ class RotaryEmbedding(nn.Module):
     def __init__(self, dim: int, base: float = 10000.0) -> None:
         super().__init__()
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
-        self.register_buffer('inv_freq', inv_freq, persistent=False)
+        self.register_buffer('inv_freq', inv_freq, persistent=True)
 
     def forward(
         self, position_ids: Int[torch.Tensor, 'batch seq']
@@ -283,5 +283,7 @@ def build_gpt2_rope(
     model = GPT2LMHeadModelWithRoPE(config)
     with torch.no_grad():
         model.transformer.wpe.weight.zero_()
+    # Does NOT survive save_pretrained/from_pretrained, but we dont care
+    # cause we are NOT resuming trainings.
     model.transformer.wpe.requires_grad_(False)
     return model

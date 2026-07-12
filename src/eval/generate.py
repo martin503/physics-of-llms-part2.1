@@ -35,7 +35,7 @@ class IgsmGenerator:
     """
 
     def __init__(
-        self, model_path: str, device: str = 'cuda', dtype: torch.dtype = torch.bfloat16
+        self, model_path: str, device: str = 'cuda', dtype: torch.dtype = torch.float32
     ) -> None:
         from transformers import AutoTokenizer
 
@@ -44,7 +44,9 @@ class IgsmGenerator:
         model = GPT2LMHeadModelWithRoPE.from_pretrained(model_path)
         model.config.use_cache = True  # saved config has use_cache=False -> force on for gen
         model.eval()
-        model.to(device).to(dtype)
+        model.to(device)
+        model.to(dtype)
+        # model = torch.compile(model)
         self.model = model
         self.device = device
         self.dtype = dtype

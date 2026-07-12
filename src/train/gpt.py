@@ -139,6 +139,12 @@ def train(
     no_eval: Annotated[
         bool, typer.Option('--no-eval', help='Disable validation entirely.')
     ] = False,
+    attn_pdrop: Annotated[float, typer.Option('--attn-pdrop')] = 0.1,
+    resid_pdrop: Annotated[float, typer.Option('--resid-pdrop')] = 0.1,
+    embd_pdrop: Annotated[float, typer.Option('--embd-pdrop')] = 0.1,
+    max_grad_norm: Annotated[
+        float, typer.Option('--max-grad-norm', help='Max gradient norm (0 = unlimited).')
+    ] = 1.0,
     attn_implementation: Annotated[str, typer.Option('--attn-implementation')] = 'sdpa',
     report_to: Annotated[list[str] | None, typer.Option('--report-to')] = None,
     seed: Annotated[int, typer.Option('--seed')] = 0,
@@ -160,6 +166,9 @@ def train(
             n_inner=256,
             vocab_size=VOCAB_SIZE,
             n_positions=context_length,
+            attn_pdrop=attn_pdrop,
+            resid_pdrop=resid_pdrop,
+            embd_pdrop=embd_pdrop,
         )
         per_device_train_batch_size = 2
         gradient_accumulation_steps = 1
@@ -176,6 +185,9 @@ def train(
         config = build_gpt2_config(
             vocab_size=VOCAB_SIZE,
             n_positions=max(2048, context_length),
+            attn_pdrop=attn_pdrop,
+            resid_pdrop=resid_pdrop,
+            embd_pdrop=embd_pdrop,
         )
         dataloader_num_workers = dataloader_num_workers
 
@@ -223,6 +235,7 @@ def train(
         max_steps=max_steps,
         warmup_steps=warmup_steps,
         weight_decay=weight_decay,
+        max_grad_norm=max_grad_norm if max_grad_norm > 0 else 1000.0,
         adam_beta1=adam_beta1,
         adam_beta2=adam_beta2,
         adam_epsilon=adam_epsilon,
