@@ -55,7 +55,7 @@ class RotaryEmbedding(nn.Module):
     ]:
         """Return ``(cos, sin)`` of shape ``(batch, 1, seq, dim)`` for the given positions."""
         freqs = torch.einsum('bi,j->bij', position_ids.float(), self.inv_freq)
-        emb = einops.repeat(freqs, 'b s d -> b s (r d)', r=2)
+        emb = einops.repeat(freqs, 'batch seq dim -> batch seq (r dim)', r=2) # copy values 2 times along dim
         cos = emb.cos()[:, None, :, :]
         sin = emb.sin()[:, None, :, :]
         return cos, sin
@@ -150,7 +150,7 @@ class GPT2AttentionWithRoPE(GPT2Attention):
             value_states = value_states.view(shape_kv).transpose(1, 2)
 
         shape_q = (*query_states.shape[:-1], -1, self.head_dim)
-        query_states = query_states.view(shape_q).transpose(1, 2)
+        query_states = query_states.view(shape_q).transpose(1, 2) # batch ? seq dim
 
         # ----- RoPE insertion (self-attention only, before KV-cache update) -----
         # Applied to query/key after the head reshape and before the cache update so that
@@ -159,8 +159,8 @@ class GPT2AttentionWithRoPE(GPT2Attention):
             seq_len_q = query_states.shape[-2]
             pos = position_ids[:, -seq_len_q:]  # (batch, seq_q) absolute positions
             cos, sin = self.rotary_emb(pos)
-            cos = cos.to(query_states.dtype)
-            sin = sin.to(query_states.dtype)
+            cos = cos.to(query_states.dtype) # typecast
+            sin = sin.to(query_states.dtype) # typecast
             query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
         # -----------------------------------------------------------------------
 
