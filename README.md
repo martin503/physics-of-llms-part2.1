@@ -15,6 +15,14 @@ git submodule update --init --recursive # clones iGSM
 ```
 
 ## Examples
+### Data gen
+
+```
+uv run python -m src.data.igsm generate --split train --num-problems 300000 --workers 12 --batch-size 100000 --out data/igsm_train_100k
+```
+300000 problems -> 3 shards, 131421 packed windows of length 768 at data/igsm_train_100k
+  note: paper trains 100k steps x batch 512 ~= 51M windows; this finite dataset is cycled over epochs for the working version.
+and it took 1h, so it would take whole day on my pc to generate it.
 
 ### Training
 
@@ -36,14 +44,31 @@ This takes ~170h on 2x3090
 
 We also added flash_attention option which also casts model weights to bf16, for biggest VRAM wins, to use it set `--attn-implementation flash_attention_2`.
 
-### Data gen
+### SLURM (multi-GPU cluster, e.g. gruenau9/10 A100s)
+
+Pre-flight smoke test (real GPU path, 20 steps, 1 GPU, no wandb/eval/compile) before committing to a
+multi-day job:
 
 ```
-uv run python -m src.data.igsm generate --split train --num-problems 300000 --workers 12 --batch-size 100000 --out data/igsm_train_100k
+sbatch smoke.sbatch
+squeue -u $USER
+tail -f smoke-<JOBID>.log
 ```
-300000 problems -> 3 shards, 131421 packed windows of length 768 at data/igsm_train_100k
-  note: paper trains 100k steps x batch 512 ~= 51M windows; this finite dataset is cycled over epochs for the working version.
-and it took 1h, so it would take whole day on my pc to generate it.
+Check it printed a dropping loss and finished cleanly:
+```
+sacct -j <JOBID> --format=JobID,State,ExitCode,MaxRSS,ReqMem,Elapsed
+```
+
+Full training (100k steps, 3x A100, matches the paper's effective batch size closely: 16 x 11 x 3 = 528 vs 512):
+```
+sbatch train.sbatch
+squeue -u $USER
+tail -f train-<JOBID>.log
+```
+Resume after a timeout/kill (picks up the latest checkpoint automatically):
+```
+sbatch --export=ALL,RESUME=1 train.sbatch
+```
 
 ### Eval
 

@@ -3,6 +3,9 @@
 /data
 /wandb
 /runs.txt
+/profiles
+/plot
+/logs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -224,5 +227,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-/.vscode
+/final_models
 /results
