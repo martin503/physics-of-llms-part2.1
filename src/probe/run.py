@@ -51,9 +51,19 @@ def extract(
 @app.command()
 def train(
     data: Annotated[Path, typer.Option('--data', help='.npz from `extract`.')],
+    n_classes: Annotated[int, typer.Option('--n-classes')] = 2,
     epochs: Annotated[int, typer.Option('--epochs')] = 50,
     lr: Annotated[float, typer.Option('--lr')] = 1e-3,
+    weight_decay: Annotated[float, typer.Option('--weight-decay')] = 1e-3,
+    balance_classes: Annotated[
+        bool,
+        typer.Option(
+            '--balance-classes/--no-balance-classes',
+            help='Weight the loss by inverse train-set class frequency (counters imbalance).',
+        ),
+    ] = False,
     device: Annotated[str, typer.Option('--device')] = 'cpu',
+    seed: Annotated[int, typer.Option('--seed', help='Split/init seed; fix it across a sweep.')] = 0,
 ) -> None:
     """Stage B: train the linear probe (group split) and print held-out metrics."""
     from src.probe.probe import train_probe
@@ -63,7 +73,8 @@ def train(
     if groups is None:
         typer.echo('WARNING: no groups in npz -- row split leaks between problems')
     _probe, metrics = train_probe(
-        d['X'], d['y'], groups=groups, epochs=epochs, lr=lr, device=device
+        d['X'], d['y'], groups=groups, n_classes=n_classes, epochs=epochs, lr=lr,
+        weight_decay=weight_decay, balance_classes=balance_classes, device=device, seed=seed,
     )
     typer.echo(f'layer {int(d["layer"])}: {metrics}')
 
@@ -93,6 +104,15 @@ def vprobe(
         typer.Option('--batch-size', help='Rows per step. Main VRAM knob; lower if you OOM.'),
     ] = 8,
     lr: Annotated[float, typer.Option('--lr')] = 1e-3,
+    weight_decay: Annotated[float, typer.Option('--weight-decay')] = 1e-3,
+    balance_classes: Annotated[
+        bool,
+        typer.Option(
+            '--balance-classes/--no-balance-classes',
+            help='Weight the loss by inverse train-set class frequency. Without it the ~80/20 '
+            'nece imbalance lets the probe collapse to the majority class (MCC ~0).',
+        ),
+    ] = False,
     grad_checkpointing: Annotated[
         bool,
         typer.Option(
@@ -123,6 +143,7 @@ def vprobe(
     lm = load_lm(None if random_model else model_path, device=device)
     _probe, metrics = train_vprobe(
         rows, lm, rank=rank, epochs=epochs, batch_size=batch_size, lr=lr,
+        weight_decay=weight_decay, balance_classes=balance_classes,
         grad_checkpointing=grad_checkpointing, vram_fraction=vram_fraction,
         device=device, seed=seed,
     )

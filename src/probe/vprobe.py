@@ -230,12 +230,21 @@ def _split_by_group(
 
 @torch.no_grad()
 def _evaluate(
-    probe: VProbe, rows: list[VProbeRow], batch_size: int, device: str
+    probe: VProbe,
+    rows: list[VProbeRow],
+    batch_size: int,
+    device: str,
+    loss_fn: nn.Module | None = None,
 ) -> dict[str, float]:
-    """Accuracy + MCC over `rows` (accuracy for comparability with the paper's Figure 7)."""
+    """Accuracy + MCC over `rows` (accuracy for comparability with the paper's Figure 7).
+
+    `loss_fn`, if given, is also evaluated batch-wise and averaged; used to report a
+    val loss comparable to the training loss without running eval twice.
+    """
     probe.eval()
     preds: list[int] = []
     labels: list[int] = []
+    total_loss = 0.0
     # length-sorted so eval batches don't pad to the global max either
     order = sorted(range(len(rows)), key=lambda i: len(rows[i].input_ids))
     for start in range(0, len(order), batch_size):
@@ -243,15 +252,20 @@ def _evaluate(
         ids, mask, end, y = _pad_batch(batch, device)
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=device.startswith('cuda')):
             logits = probe(ids, mask, end)
+            if loss_fn is not None:
+                total_loss += loss_fn(logits, y).item() * len(batch)
         preds.extend(logits.float().argmax(dim=-1).cpu().tolist())
         labels.extend(y.cpu().tolist())
     preds_arr, labels_arr = np.asarray(preds), np.asarray(labels)
     majority = np.bincount(labels_arr).argmax()
-    return {
+    metrics = {
         'acc': float((preds_arr == labels_arr).mean()),
         'mcc': float(matthews_corrcoef(labels_arr, preds_arr)),
         'acc_majority': float((labels_arr == majority).mean()),  # the paper's baseline row
     }
+    if loss_fn is not None:
+        metrics['loss'] = total_loss / len(rows)
+    return metrics
 
 
 def train_vprobe(
@@ -265,6 +279,7 @@ def train_vprobe(
     batch_size: int = 8,
     lr: float = 1e-3,
     weight_decay: float = 1e-3,
+    balance_classes: bool = False,
     grad_checkpointing: bool = True,
     vram_fraction: float = DEFAULT_VRAM_FRACTION,
     device: str = 'cuda',
@@ -275,6 +290,11 @@ def train_vprobe(
     Returns `(probe, metrics)` with `acc_val` / `mcc_val`, the train-set counterparts
     (memorisation check), `acc_majority` (the paper's baseline), and `peak_vram_gib`.
     Interpretation needs the random-model control: rerun with a random-init lm and compare.
+
+    `balance_classes` weights the loss by inverse train-set class frequency (as in
+    `probe.train_probe`). With the ~80/20 `nece` imbalance the unweighted loss lets the
+    optimiser collapse to always predicting the majority class -- loss parks at the prior's
+    entropy and MCC stays ~0. Weighting removes that trivial minimum; watch MCC, not accuracy.
 
     Memory: gradients must reach the embedding delta at the bottom of the LM, so autograd would
     hold every block's activations. `grad_checkpointing` + bf16 autocast + length bucketing +
@@ -291,25 +311,63 @@ def train_vprobe(
     probe = probe.to(device)
     trainable = [p for p in probe.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=weight_decay)
-    loss_fn = nn.CrossEntropyLoss()
+
+    # optional per-class loss weight: INVERSE train-set frequency (bincount gives counts;
+    # minlength guarantees n_classes entries; clip avoids 1/0=inf for an absent class). With
+    # reduction='mean' the global weight scale cancels, so the reported loss stays comparable.
+    if balance_classes:
+        counts = np.bincount([r.label for r in train_rows], minlength=n_classes).clip(min=1)
+        class_weights = torch.tensor(1 / counts, dtype=torch.float32, device=device)
+    else:
+        class_weights = None
+    loss_fn = nn.CrossEntropyLoss(weight=class_weights)
 
     indices = np.arange(len(train_rows))
+    # last known val numbers, carried into the postfix until the next epoch's eval pass
+    val_loss, val_mcc = float('nan'), float('nan')
     for epoch in range(epochs):
         probe.train()
         batches = _length_bucketed_batches(train_rows, indices, batch_size)
         rng.shuffle(batches)  # shuffle batch order, keep within-batch lengths homogeneous
         total_loss = 0.0
-        for batch in tqdm(batches, desc=f'epoch {epoch + 1}/{epochs}', unit='batch'):
+        n_seen = 0
+        epoch_preds: list[int] = []
+        epoch_labels: list[int] = []
+        pbar = tqdm(batches, desc=f'epoch {epoch + 1}/{epochs}', unit='batch')
+        for batch in pbar:
             ids, mask, end, y = _pad_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
                 device_type='cuda', dtype=torch.bfloat16, enabled=device.startswith('cuda')
             ):
-                loss = loss_fn(probe(ids, mask, end), y)
+                logits = probe(ids, mask, end)
+                loss = loss_fn(logits, y)
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * len(batch)
-        print(f'epoch {epoch + 1}: train loss {total_loss / len(train_rows):.4f}')
+            n_seen += len(batch)
+            epoch_preds.extend(logits.detach().float().argmax(dim=-1).cpu().tolist())
+            epoch_labels.extend(y.cpu().tolist())
+            # MCC needs both classes seen at least once, else sklearn warns and returns 0
+            train_mcc = (
+                matthews_corrcoef(epoch_labels, epoch_preds) if len(set(epoch_labels)) > 1 else float('nan')
+            )
+            pbar.set_postfix(
+                {
+                    'loss': total_loss / n_seen,
+                    'mcc': train_mcc,
+                    'val_loss': val_loss,
+                    'val_mcc': val_mcc,
+                },
+                refresh=False,
+            )
+        train_epoch_loss = total_loss / n_seen
+        val_metrics = _evaluate(probe, val_rows, batch_size, device, loss_fn=loss_fn)
+        val_loss, val_mcc = val_metrics['loss'], val_metrics['mcc']
+        print(
+            f'epoch {epoch + 1}: train loss {train_epoch_loss:.4f} mcc {train_mcc:.3f} | '
+            f'val loss {val_loss:.4f} mcc {val_mcc:.3f}'
+        )
 
     val_metrics = _evaluate(probe, val_rows, batch_size, device)
     train_metrics = _evaluate(probe, train_rows, batch_size, device)

@@ -157,20 +157,34 @@ Smoke test (~30 s on GPU; validates the full path):
 uv run python -m src.probe.run vprobe --model-path final_models/gpt2-rope-igsm/final --n-problems 16 --epochs 1 --batch-size 16
 ```
 
-Full nece V-probe + control (defaults are memory-safe; see Resource use above):
+Full nece V-probe + control. **Always pass `--balance-classes`** for `nece`: the ~80/20
+imbalance otherwise lets the probe collapse to the majority class (loss parks at the prior's
+entropy, MCC ~0 -- the failure mode in the first runs). Keep `--n-problems` and `--seed`
+identical between the pretrained run and its control so the pretrained−random val-MCC gap is
+apples-to-apples. Defaults are memory-safe; the 24 GB box has headroom for `--batch-size 16`
+(the 300/5000-problem runs peaked at 3.8/8.4 GiB -- watch `peak_vram_gib`).
 
 ```bash
-uv run python -m src.probe.run vprobe --model-path final_models/gpt2-rope-igsm/final --n-problems 300 --epochs 3 --batch-size 8 > results/vprobe_nece_pretrained.log
+uv run python -m src.probe.run vprobe --model-path final_models/gpt2-rope-igsm/final --n-problems 500 --epochs 20 --batch-size 24 --balance-classes --seed 0 > results/vprobe_nece_pretrained.log
 ```
 ```bash
-uv run python -m src.probe.run vprobe --random-model --n-problems 300 --epochs 3 --batch-size 8 > results/vprobe_nece_random.log
+uv run python -m src.probe.run vprobe --random-model --n-problems 500 --epochs 20 --batch-size 24 --balance-classes --seed 0 > results/vprobe_nece_random.log
 ```
 
-Linear-probe baseline (two stages):
+Tuning knobs now exposed on the CLI: `--epochs`, `--lr`, `--weight-decay`, `--rank`,
+`--batch-size`, `--balance-classes`. With balancing, expect the loss to *start higher*
+(~0.69, the balanced-prior entropy, not the ~0.46 you saw unweighted) and then fall; if it
+parks at ~0.69 the probe still isn't extracting signal. Diagnose on `mcc_train` first (can it
+fit at all?) before reading `mcc_val`. The zero-init delta learns slowly through 12 frozen
+blocks, so if a single `--lr` stalls, try raising it (e.g. 3e-3) or more epochs.
+
+Linear-probe baseline (two stages). The linear probe reads one shared position and is
+degenerate for `nece` by construction (see above) -- it is the baseline, not expected to
+work; `--balance-classes` is exposed here too:
 
 ```bash
-uv run python -m src.probe.run extract --model-path final_models/gpt2-rope-igsm/final --layer 6 --n-problems 300 --out data/probe/nece_l6.npz
-uv run python -m src.probe.run train --data data/probe/nece_l6.npz
+uv run python -m src.probe.run extract --model-path final_models/gpt2-rope-igsm/final --layer 6 --n-problems 1000 --out data/probe/nece_l6.npz
+uv run python -m src.probe.run train --data data/probe/nece_l6.npz --balance-classes
 ```
 
 ## Viewing results
