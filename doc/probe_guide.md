@@ -154,24 +154,22 @@ uv run python -m pytest .\tests\ -q
 Smoke test (~30 s on GPU; validates the full path):
 
 ```bash
-uv run python -m src.probe.run vprobe --model-path final_models/gpt2-rope-igsm/final \
-    --n-problems 16 --epochs 1 --batch-size 16
+uv run python -m src.probe.run vprobe --model-path final_models/gpt2-rope-igsm/final --n-problems 16 --epochs 1 --batch-size 16
 ```
 
 Full nece V-probe + control (defaults are memory-safe; see Resource use above):
 
 ```bash
-uv run python -m src.probe.run vprobe --model-path final_models/gpt2-rope-igsm/final \
-    --n-problems 300 --epochs 3 --batch-size 8 > results/vprobe_nece_pretrained.log 2>&1
-uv run python -m src.probe.run vprobe --random-model \
-    --n-problems 300 --epochs 3 --batch-size 8 > results/vprobe_nece_random.log 2>&1
+uv run python -m src.probe.run vprobe --model-path final_models/gpt2-rope-igsm/final --n-problems 300 --epochs 3 --batch-size 8 > results/vprobe_nece_pretrained.log
+```
+```bash
+uv run python -m src.probe.run vprobe --random-model --n-problems 300 --epochs 3 --batch-size 8 > results/vprobe_nece_random.log
 ```
 
 Linear-probe baseline (two stages):
 
 ```bash
-uv run python -m src.probe.run extract --model-path final_models/gpt2-rope-igsm/final \
-    --layer 6 --n-problems 300 --out data/probe/nece_l6.npz
+uv run python -m src.probe.run extract --model-path final_models/gpt2-rope-igsm/final --layer 6 --n-problems 300 --out data/probe/nece_l6.npz
 uv run python -m src.probe.run train --data data/probe/nece_l6.npz
 ```
 
