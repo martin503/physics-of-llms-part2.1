@@ -195,3 +195,30 @@ def param_read_positions(pp: ProbeProblem) -> dict[Param, int]:
         dict[Param, int]: Mapping from each parameter to its token index.
     """
     return {param: pp.sol_bos_index for param in pp.all_param}
+
+
+def problem_desc_end_index(pp: ProbeProblem) -> int:
+    """Token index of the last problem-*description* token in `pp.token_id` (before the question).
+
+    The paper probes `dep(A, B)` at the end of the problem *description*, before the question is
+    asked (Figure 13b / Appendix B) -- unlike `nece(A)`, which is probed at the end of the question
+    (`sol_bos_index`). iGSM emits the question as the final problem sentence, so the description is
+    `problem.problem[:-1]`, joined and tokenized exactly as `id_gen` builds `token_id`
+    (`" " + ". ".join(sentences) + "."`, then `[222] + prob_token + ...`).
+
+    The returned index points at the terminating '.' of the description; `token_id[index + 1]` is
+    the first question token. Asserts the reconstructed description tokens align with `token_id`, so
+    any BPE-boundary drift fails loudly rather than silently probing at the wrong position (the same
+    guarantee `_solution_step_positions` gives for the solution steps).
+    """
+    ensure_igsm_submodule()
+    from tools.tools import tokenizer  # iGSM's GPT-2 tokenizer
+
+    desc_text = ' ' + '. '.join(pp.problem.problem[:-1]) + '.'
+    desc_tokens = tokenizer.encode(desc_text)
+    end_index = len(desc_tokens)  # token_id[0] is PROB_BOS (222); description is token_id[1:end+1]
+    assert pp.token_id[1 : end_index + 1] == desc_tokens, (
+        'problem-description tokens do not align with token_id -- tokenizer/BPE-boundary drift; '
+        'the dep probe position cannot be trusted'
+    )
+    return end_index
