@@ -28,9 +28,10 @@ def load_frozen_model(model_path: str, device: str = 'cuda', dtype: torch.dtype 
     Mirrors `src.eval.generate.IgsmGenerator.__init__` but flips on `output_hidden_states`
     and disables the KV-cache (we do single full-sequence forward passes, not generation).
     """
-    from src.model.gpt2_rope import GPT2LMHeadModelWithRoPE
+    from src.model.gpt2_rope import GPT2LMHeadModelWithRoPE, verify_rope_buffers
 
     model = GPT2LMHeadModelWithRoPE.from_pretrained(model_path)
+    verify_rope_buffers(model)  # reject checkpoints that load with garbage inv_freq
     model.config.use_cache = False
     model.config.output_hidden_states = True
     model.eval().to(device).to(dtype)

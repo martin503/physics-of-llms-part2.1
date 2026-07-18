@@ -45,7 +45,12 @@ class RotaryEmbedding(nn.Module):
     def __init__(self, dim: int, base: float = 10000.0) -> None:
         super().__init__()
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
-        self.register_buffer('inv_freq', inv_freq, persistent=False)
+        # persistent=True (fix ported from qknorm commit 4957741): from_pretrained builds the
+        # model on the meta device, which SKIPS this __init__ computation. A non-persistent
+        # buffer is then never filled from the checkpoint either -> uninitialized memory and
+        # silently broken RoPE. Persisting the buffer stores it in the checkpoint and loads it
+        # back "in place". Checkpoints saved before this fix lack the key -- load_lm verifies.
+        self.register_buffer('inv_freq', inv_freq, persistent=True)
 
     def forward(
         self, position_ids: Int[torch.Tensor, 'batch seq']
@@ -229,6 +234,29 @@ class GPT2LMHeadModelWithRoPE(GPT2LMHeadModel):
         super().__init__(config)
         self.transformer = GPT2ModelWithRoPE(config)
         self.post_init()
+
+
+def verify_rope_buffers(model: GPT2LMHeadModelWithRoPE) -> None:
+    """Assert every ``inv_freq`` buffer matches the RoPE formula; raise on corruption.
+
+    Guards the ``from_pretrained`` meta-device pitfall (see ``RotaryEmbedding.__init__``):
+    a checkpoint saved *before* ``inv_freq`` became persistent has no such keys, so loading
+    it leaves the buffers as uninitialized memory ("missing keys" only warns). Measured
+    impact of that silent corruption on the old local checkpoint: teacher-forced next-token
+    accuracy 55.6% vs 87.5%. Call this after every ``from_pretrained``.
+    """
+    base = getattr(model.config, 'rope_theta', 10000.0)
+    for name, module in model.named_modules():
+        if isinstance(module, RotaryEmbedding):
+            dim = module.inv_freq.shape[0] * 2
+            expected = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+            if not torch.allclose(module.inv_freq.cpu().float(), expected):
+                raise ValueError(
+                    f'{name}.inv_freq does not match the RoPE formula (base={base}) -- the '
+                    'checkpoint predates the persistent inv_freq fix and loaded uninitialized '
+                    'buffers. Re-save the checkpoint with inv_freq in place, or use one that '
+                    'stores it (e.g. the HF gpt2-igsm-med model).'
+                )
 
 
 def build_gpt2_config(
