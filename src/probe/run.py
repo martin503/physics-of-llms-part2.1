@@ -21,6 +21,19 @@ offline first (multiprocess; a few hundred online problems overfit badly), then 
 Each `vprobe` run writes a timestamped directory under `trained_probes/` containing
 `config.json` (all parameters + git commit), `train.log`, `metrics.json` (final + per-epoch
 history), and `probe.pt` (the trainable delta/head only; reload with `vprobe.load_vprobe`).
+
+Testing a trained probe on fresh problems (disjoint seed range; for `dep` use
+`--dep-all-pairs` so every ordered (A, B) pair is present -- the natural distribution the
+graph report needs). Then evaluate each run dir and render the interactive report:
+
+    uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --n-problems 200 \\
+        --seed-start 1000000 --workers 8 --out data/probe/vprobe_dep_eval_200
+    uv run python -m src.probe.run test --run-dir trained_probes/<pretrained-run> \\
+        --data data/probe/vprobe_dep_eval_200
+    uv run python -m src.probe.run test --run-dir trained_probes/<random-run> \\
+        --data data/probe/vprobe_dep_eval_200
+    uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> \\
+        --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200
 """
 
 from __future__ import annotations
@@ -153,14 +166,66 @@ def gen_data(
     overwrite: Annotated[
         bool, typer.Option('--overwrite', help='Delete the output dir first and start fresh.')
     ] = False,
+    dep_all_pairs: Annotated[
+        bool,
+        typer.Option(
+            '--dep-all-pairs',
+            help='dep only: keep every ordered (A, B) pair instead of the balanced subsample '
+            '-- the natural test distribution (~85-90%% negative), needed for the graph report.',
+        ),
+    ] = False,
+    seeds_file: Annotated[
+        Path | None,
+        typer.Option(
+            '--seeds-file',
+            help='JSON from `find-seeds`: generate rows for exactly those problem seeds '
+            '(overrides --n-problems/--seed-start/--split).',
+        ),
+    ] = None,
 ) -> None:
     """Generate V-probe rows offline (multiprocess, resumable parquet shards + metadata)."""
+    import json as _json
+
     from src.probe.data import generate_rows_to_dir
 
+    if dep_all_pairs and target != 'dep':
+        raise typer.BadParameter('--dep-all-pairs only applies to --target dep')
+    seed_list = None
+    if seeds_file is not None:
+        showcase = _json.loads(seeds_file.read_text(encoding='utf-8'))
+        seed_list = showcase['seeds']
+        split = showcase['split']  # the seeds are only meaningful under their own split
     _setup_logging()
     generate_rows_to_dir(
         out, n_problems, target=target, split=split, seed_start=seed_start, workers=workers,
         problems_per_shard=problems_per_shard, model_path=model_path, overwrite=overwrite,
+        dep_all_pairs=dep_all_pairs, seed_list=seed_list,
+    )
+
+
+@app.command(name='find-seeds')
+def find_seeds(
+    out: Annotated[Path, typer.Option('--out')] = Path('data/probe/showcase_seeds.json'),
+    per_op: Annotated[
+        int, typer.Option('--per-op', help='Problems to keep per difficulty (op count).')
+    ] = 3,
+    split: Annotated[str, typer.Option('--split')] = 'test',
+    scan_seed: Annotated[
+        int, typer.Option('--scan-seed', help='RNG seed for the (scattered) candidate stream.')
+    ] = 0,
+    max_scan: Annotated[int, typer.Option('--max-scan')] = 2_000,
+    workers: Annotated[int, typer.Option('--workers')] = 8,
+) -> None:
+    """Pick scattered showcase seeds: `--per-op` problems per difficulty (iGSM `n_op`, 1..15).
+
+    Candidates are drawn randomly from a huge seed range, so the accepted seeds are
+    non-sequential and disjoint from training's sequential ranges. Feed the JSON to
+    `gen-data --seeds-file`."""
+    from src.probe.data import find_showcase_seeds
+
+    _setup_logging()
+    find_showcase_seeds(
+        out, per_op=per_op, split=split, scan_seed=scan_seed, max_scan=max_scan, workers=workers
     )
 
 
@@ -267,7 +332,9 @@ def vprobe(
     else:
         rows = build_vprobe_rows(n_problems, target=target, split=split, seed_start=seed_start)
 
-    lm = load_lm(None if random_model else model_path, device=device)
+    # `seed` also fixes the random-init control's weights: `test` rebuilds the same LM from
+    # the recorded seed, so a saved probe.pt can be re-paired with its transformer later.
+    lm = load_lm(None if random_model else model_path, device=device, seed=seed)
     probe, metrics, history = train_vprobe(
         rows, lm, rank=rank, epochs=epochs, batch_size=batch_size, lr=lr,
         weight_decay=weight_decay, balance_classes=balance_classes,
@@ -282,6 +349,66 @@ def vprobe(
     label = 'RANDOM-INIT control' if random_model else model_path
     log.info('[%s] %s: %s', label, target, ', '.join(f'{k}={v:.4f}' for k, v in metrics.items()))
     log.info('saved probe + metrics to %s', run_dir)
+
+
+@app.command(name='test')
+def test_probe(
+    run_dir: Annotated[
+        Path,
+        typer.Option('--run-dir', help='Trained probe run dir (config.json + probe.pt).'),
+    ],
+    data: Annotated[
+        Path,
+        typer.Option(
+            '--data',
+            help='Offline eval dataset from `gen-data` -- use a seed range disjoint from '
+            'training and, for dep, --dep-all-pairs (natural distribution).',
+        ),
+    ],
+    batch_size: Annotated[int, typer.Option('--batch-size')] = 32,
+    device: Annotated[str, typer.Option('--device')] = 'cuda',
+) -> None:
+    """Evaluate a trained V-probe on held-out problems; write predictions + metrics into the
+    run dir (`<run-dir>/test_<dataset>/`). Run once per probe (pretrained AND random control)
+    before `report-dep`."""
+    from src.probe.evaluate import evaluate_run
+
+    _setup_logging()
+    metrics = evaluate_run(run_dir, data, batch_size=batch_size, device=device)
+    typer.echo(
+        f'acc={metrics["acc"]:.4f} mcc={metrics["mcc"]:.4f} '
+        f'(majority {metrics["acc_majority"]:.4f}) | '
+        f'tp={metrics["tp"]} tn={metrics["tn"]} fp={metrics["fp"]} fn={metrics["fn"]}'
+    )
+
+
+@app.command(name='report-dep')
+def report_dep(
+    pretrained_run: Annotated[
+        Path, typer.Option('--pretrained-run', help='Run dir of the pretrained-model probe.')
+    ],
+    random_run: Annotated[
+        Path, typer.Option('--random-run', help='Run dir of the random-init control probe.')
+    ],
+    data: Annotated[
+        Path, typer.Option('--data', help='The eval dataset both probes were `test`ed on.')
+    ],
+    n_problems: Annotated[
+        int,
+        typer.Option('--n-problems', help='How many problems to include in the report.'),
+    ] = 12,
+    out: Annotated[Path, typer.Option('--out')] = Path('visualizations/dep_probe_report.html'),
+) -> None:
+    """Render the interactive dep(A, B) report: problem text + dependency-graph view of both
+    probes' predictions (needs `test` output for both run dirs on the same dataset)."""
+    from src.probe.report_dep import build_report
+
+    _setup_logging()
+    build_report(
+        pretrained_run=pretrained_run, random_run=random_run, data_dir=data,
+        n_problems=n_problems, out=out,
+    )
+    typer.echo(f'report written to {out}')
 
 
 if __name__ == '__main__':

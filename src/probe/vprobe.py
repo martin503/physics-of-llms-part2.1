@@ -80,11 +80,18 @@ def apply_memory_guardrails(device: str, vram_fraction: float = DEFAULT_VRAM_FRA
 @dataclass
 class VProbeRow:
     """One probe query. `input_ids` ends with the injected parameter block: [START] desc(A) [END]
-    for nece, or [START] desc(A) [MID] desc(B) [END] for dep. The head reads the final token."""
+    for nece, or [START] desc(A) [MID] desc(B) [END] for dep. The head reads the final token.
+
+    `param_a`/`param_b` are indices into the problem's `all_param` (the queried A and B; B is -1
+    for nece rows). They let test-time predictions be mapped back onto the dependency graph;
+    training ignores them (and datasets generated before they existed load as -1).
+    """
 
     input_ids: list[int]
     label: int
     group: int  # problem seed; split train/val by this, never by row
+    param_a: int = -1
+    param_b: int = -1
 
 
 def rows_for_problem(
@@ -94,11 +101,14 @@ def rows_for_problem(
     split: str = 'test',
     med_cfg: dict[str, Any] | None = None,
     max_seq_len: int = MAX_SEQ_LEN,
+    dep_all_pairs: bool = False,
 ) -> tuple[list[VProbeRow], int]:
     """Build the V-probe rows for one regenerated problem; return `(rows, n_skipped)`.
 
     Dispatches on `target` (`nece` or `dep`); see `_nece_rows_for_problem` /
     `_dep_rows_for_problem` for the per-task input layout and read position.
+    `dep_all_pairs` (dep only) keeps every ordered off-diagonal pair instead of the
+    balanced subsample -- the natural-distribution universe used for *testing*.
 
     This is the unit of work for offline multiprocess generation (`src.probe.data`):
     each problem is fully determined by `(seed, split, med_cfg)` -- including the
@@ -109,7 +119,7 @@ def rows_for_problem(
         raise ValueError(f'target must be one of {TARGETS}, got {target!r}')
     pp = regenerate_problem(seed, split=split, med_cfg=med_cfg)
     if target == 'dep':
-        return _dep_rows_for_problem(pp, seed, max_seq_len)
+        return _dep_rows_for_problem(pp, seed, max_seq_len, all_pairs=dep_all_pairs)
     return _nece_rows_for_problem(pp, seed, max_seq_len)
 
 
@@ -135,12 +145,16 @@ def _nece_rows_for_problem(
         if len(input_ids) > max_seq_len:
             skipped += 1  # guardrail: one pathological row must not set the batch's memory
             continue
-        rows.append(VProbeRow(input_ids=input_ids, label=int(pp.nece[p_idx]), group=seed))
+        rows.append(
+            VProbeRow(
+                input_ids=input_ids, label=int(pp.nece[p_idx]), group=seed, param_a=p_idx
+            )
+        )
     return rows, skipped
 
 
 def _dep_rows_for_problem(
-    pp: ProbeProblem, seed: int, max_seq_len: int
+    pp: ProbeProblem, seed: int, max_seq_len: int, all_pairs: bool = False
 ) -> tuple[list[VProbeRow], int]:
     """`dep(A, B)` rows: balanced (A, B) pairs, read at the end of the problem description.
 
@@ -157,6 +171,10 @@ def _dep_rows_for_problem(
     giving a per-problem-balanced dataset. Sampling is seeded from the problem `seed`, so offline
     generation stays deterministic and resumable. Unlike `nece`, no `--balance-classes` is needed:
     the classes are ~50/50 by construction (the paper's natural dep distribution is ~83% negative).
+
+    `all_pairs=True` skips the subsampling and keeps every ordered off-diagonal pair -- the
+    natural (heavily negative) distribution. Use it for *test* datasets, where predictions are
+    mapped back onto the full dependency graph; training on it would need class re-weighting.
     """
     ensure_igsm_submodule()
     from tools.tools import tokenizer  # iGSM's GPT-2 tokenizer
@@ -168,10 +186,11 @@ def _dep_rows_for_problem(
     pos = np.argwhere((dep == 1) & off_diag)
     neg = np.argwhere((dep == 0) & off_diag)
 
-    rng = np.random.default_rng(seed)  # per-problem: keeps offline generation reproducible
-    n_neg = min(len(pos), len(neg))  # balance 1:1; keep all positives, subsample the many negatives
-    if len(neg) > n_neg:
-        neg = neg[rng.choice(len(neg), size=n_neg, replace=False)]
+    if not all_pairs:
+        rng = np.random.default_rng(seed)  # per-problem: keeps offline generation reproducible
+        n_neg = min(len(pos), len(neg))  # balance 1:1; keep all positives, subsample negatives
+        if len(neg) > n_neg:
+            neg = neg[rng.choice(len(neg), size=n_neg, replace=False)]
 
     # get_param is not free, so encode each parameter's description once (n_param is small)
     desc_ids = [tokenizer.encode(' ' + pp.problem.get_param(param)) for param in pp.all_param]
@@ -184,7 +203,12 @@ def _dep_rows_for_problem(
             if len(input_ids) > max_seq_len:
                 skipped += 1  # guardrail: one pathological row must not set the batch's memory
                 continue
-            rows.append(VProbeRow(input_ids=input_ids, label=label, group=seed))
+            rows.append(
+                VProbeRow(
+                    input_ids=input_ids, label=label, group=seed,
+                    param_a=int(a), param_b=int(b),
+                )
+            )
     return rows, skipped
 
 
@@ -194,6 +218,7 @@ def build_vprobe_rows(
     target: str = 'nece',
     split: str = 'test',
     seed_start: int = 0,
+    dep_all_pairs: bool = False,
 ) -> list[VProbeRow]:
     """Build V-probe rows over `n_problems` problems, in-process (see `rows_for_problem`).
 
@@ -203,7 +228,9 @@ def build_vprobe_rows(
     rows: list[VProbeRow] = []
     skipped = 0
     for seed in tqdm(range(seed_start, seed_start + n_problems), desc='build rows', unit='prob'):
-        problem_rows, n_skipped = rows_for_problem(seed, target=target, split=split)
+        problem_rows, n_skipped = rows_for_problem(
+            seed, target=target, split=split, dep_all_pairs=dep_all_pairs
+        )
         rows.extend(problem_rows)
         skipped += n_skipped
     if skipped:
@@ -541,15 +568,22 @@ def load_vprobe(
     return probe.to(device).eval()
 
 
-def load_lm(model_path: str | None, device: str = 'cuda'):
+def load_lm(model_path: str | None, device: str = 'cuda', seed: int | None = None):
     """Load the pretrained GPT2-RoPE, or a fresh random-init one if `model_path` is None.
 
     The random-init model is the paper's control: whatever the V-probe scores on it is the
     capability added by the probe's own finetuning, not knowledge read out of pretraining.
+
+    `seed` (random-init only) makes the control's weights reproducible: a saved `probe.pt`
+    is meaningless without the exact transformer it was trained through, and the random LM
+    exists nowhere but this process. Training and later test evaluation must both call this
+    with the run's recorded seed to get the *same* control model back.
     """
     from src.model.gpt2_rope import GPT2LMHeadModelWithRoPE, build_gpt2_rope, verify_rope_buffers
 
     if model_path is None:
+        if seed is not None:
+            torch.manual_seed(seed)
         model = build_gpt2_rope()
     else:
         model = GPT2LMHeadModelWithRoPE.from_pretrained(model_path)

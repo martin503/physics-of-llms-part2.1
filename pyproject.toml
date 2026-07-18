@@ -80,6 +80,8 @@ ignore = []
 # jaxtyping shape strings (e.g. 'batch heads seq dim') are not valid Python and trip F722.
 "src/model/*.py" = ["F722"]
 "src/eval/*.py" = ["F722"]
+# the embedded HTML/CSS/JS report template has lines that don't wrap like Python does
+"src/probe/report_dep.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
