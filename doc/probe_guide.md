@@ -14,7 +14,9 @@ GPT2-12-12+RoPE trained on iGSM-med.
 | `extract.py` | **Linear probe** stage A: frozen forward passes, cache `(X, y, groups)` per layer to `.npz`. |
 | `probe.py` | **Linear probe** stage B: `nn.Linear` on cached activations, group split, MCC. |
 | `vprobe.py` | **V-probe** (§4.1): frozen LM + rank-8 embedding delta + linear head; trains through the model. |
-| `run.py` | Typer CLI: `extract`, `train`, `gen-data`, `vprobe`. |
+| `evaluate.py` | Test-time evaluation: rebuild a saved probe from its run dir, predict on a held-out offline dataset, save per-row predictions + metrics into the run dir. |
+| `report_dep.py` | Standalone interactive HTML report for `dep(A, B)`: dependency graph of predictions vs ground truth, pretrained/random toggle, confusion matrices. |
+| `run.py` | Typer CLI: `extract`, `train`, `gen-data`, `vprobe`, `test`, `report-dep`. |
 
 Test coverage (and the model-dependent code it deliberately skips): [../tests/README.md](../tests/README.md).
 
@@ -212,9 +214,48 @@ history), and `probe.pt` (trainable head + delta only; reload with `vprobe.load_
 Compare a run's `metrics.json` against its random-model control manually. `trained_probes/` is
 gitignored.
 
-**Not yet built:** an `inspect_ai` task (one sample = one problem, per-parameter
-label/prediction, agreement scorer). Prerequisite: persist per-row predictions keyed by
-`(seed, param)`.
+## Testing a trained probe (dep)
+
+Training's `mcc_val` comes from the probe's *own* dataset: same seed range, and (for dep) the
+artificially balanced 1:1 pair sample. The test pipeline answers the stronger question — fresh
+problems from a **disjoint seed range**, on the **natural pair distribution** (every ordered
+off-diagonal (A, B) pair, ~85–90% negative):
+
+```bash
+# 1. eval dataset: all pairs, seeds far above any training range (training used 0..499)
+uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --n-problems 200 --seed-start 1000000 --workers 8 --out data/probe/vprobe_dep_eval_200
+
+# 2. evaluate both probes (writes <run-dir>/test_<dataset>/{predictions.parquet,metrics.json})
+uv run python -m src.probe.run test --run-dir trained_probes/<pretrained-run> --data data/probe/vprobe_dep_eval_200
+uv run python -m src.probe.run test --run-dir trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200
+
+# 3. interactive report (problem text + dependency graph + confusion matrices)
+uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200 --out visualizations/dep_probe_report.html
+```
+
+Sizing: iGSM-med problems have 12–72 candidate params (~1,200 ordered pairs per problem on
+average), so 200 problems ≈ 240k rows. `test` is inference-only (no-grad, bf16) — far cheaper
+per row than training.
+
+The report is a single self-contained HTML file: each problem's parameters on a circle, each
+tested pair as a directed edge A→B ("A depends on B"). Line style = true label (solid:
+dependency, dashed: none); colour = correctness (green right, red wrong, wrong edges also
+marked ×). True negatives dominate and start hidden. Hover a node to isolate its pairs, click
+to pin; a toggle switches pretrained ↔ random control; confusion matrices below (per problem or
+whole test set). Since MCC on the natural distribution punishes false positives much harder
+than the balanced val metric, expect test MCC below `mcc_val` even for a good probe.
+
+**Random-control caveat:** the control's transformer exists only in the training process; it
+is rebuilt from the run's recorded `--seed` at test time. That is only faithful for runs
+trained *after* `load_lm` started seeding the random init — the probes of older random runs
+cannot be re-paired with their transformer (their test output is a fresh-random-model
+reference, not the trained pairing).
+
+**Why not `inspect_ai`:** considered and dropped for probe evaluation — Inspect is built
+around generation evals (solver → model output → scorer, chat-style transcript viewer), while
+probe testing is plain supervised classification; the custom report covers the per-sample
+inspection need. Inspect becomes the right tool for *behavioral* evals of the LM itself
+(answer accuracy on iGSM problems).
 
 ## Known gaps / TODOs
 
@@ -224,4 +265,4 @@ See [future_plans.md](future_plans.md) for the live list. Structural gaps:
   need rows per `(problem, param, step)` truncated at `step_positions[i_]`.
 - `extract.py` only caches the `nece` position; a linear dep baseline needs the
   end-of-problem-description position cached too.
-- No per-example result viewer.
+- The per-example viewer (`report-dep`) is dep-only; nece has no equivalent yet.
