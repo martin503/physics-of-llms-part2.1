@@ -44,6 +44,13 @@ plain array/list logic and two of them encode correctness guarantees the code le
 | `test_split_by_group_*` | No problem in both splits; every group placed; ≥1 val group always | The V-probe's own anti-leakage invariant breaking |
 | `test_length_bucketed_batches_*` | Bucketing covers every row exactly once, respects `batch_size`, groups similar lengths | A memory optimisation that drops/duplicates rows or stops bucketing |
 
+### `test_evaluate.py` — probe test-time evaluation (`src/probe/evaluate.py`)
+
+| Test(s) | Guarantees | Catches |
+|---|---|---|
+| `test_classification_metrics_*` | Confusion cells counted into the right buckets; MCC ±1 on perfect/inverted; single-class labels don't crash | A swapped cell silently mislabelling every edge colour in the dep report |
+| `test_predict_vprobe_restores_input_order` | `preds[i]` belongs to `rows[i]` despite internal length-sorted batching (checked with a stub probe whose output is a deterministic function of each row) | A mis-scatter assigning predictions to the wrong (A, B) pairs — invisible in aggregate metrics, fatal for the graph report |
+
 ## Known gaps (intentional, integration-shaped)
 
 These have **no unit tests** because they need the frozen model and/or the iGSM submodule:
