@@ -16,6 +16,7 @@ Examples::
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Annotated, Any
@@ -37,7 +38,12 @@ from src.data.igsm import (
     VOCAB_SIZE,
     load_igsm_dataset,
 )
-from src.model.gpt2_rope import build_gpt2_config, build_gpt2_rope
+from src.model.gpt2_rope import (
+    GPT2LMHeadModelWithRoPE,
+    build_gpt2_config,
+    build_gpt2_rope,
+    recompute_rope_inv_freq,
+)
 
 
 class PackedDataset(TorchDataset):
@@ -159,6 +165,15 @@ def train(
     output_dir: Annotated[
         Path, typer.Option('--output-dir', help='Where to write checkpoints.')
     ] = Path('models/gpt2-rope-igsm'),
+    init_from: Annotated[
+        Path | None,
+        typer.Option(
+            '--init-from',
+            help='Initialize model weights from a saved checkpoint dir (model weights only; '
+            'fresh optimizer/scheduler, step count from 0). Use to continue training from a '
+            'trainer.save_model() output, e.g. models/100k_model/gpt-rope-igsm-fixed.',
+        ),
+    ] = None,
     context_length: Annotated[int, typer.Option('--context-length')] = DEFAULT_CONTEXT_LENGTH,
     dataloader_num_workers: Annotated[int, typer.Option('--dataloader-num-workers')] = 4,
     per_device_train_batch_size: Annotated[
@@ -168,6 +183,17 @@ def train(
         int, typer.Option('--gradient-accumulation-steps')
     ] = 16,
     learning_rate: Annotated[float, typer.Option('--learning-rate')] = 2e-3,
+    lr_scheduler_type: Annotated[
+        str, typer.Option('--lr-scheduler-type', help='transformers LR scheduler name.')
+    ] = 'cosine_with_min_lr',
+    lr_scheduler_kwargs: Annotated[
+        str | None,
+        typer.Option(
+            '--lr-scheduler-kwargs',
+            help='Scheduler kwargs as a JSON object, e.g. \'{"min_lr_rate": 0.01}\'. '
+            'Defaults to {"min_lr_rate": 0.01} for cosine_with_min_lr, else {}.',
+        ),
+    ] = None,
     max_steps: Annotated[
         int, typer.Option('--max-steps', help='Paper uses 100k; 5k is a working default.')
     ] = 5_000,
@@ -182,6 +208,10 @@ def train(
     gradient_checkpointing: Annotated[bool, typer.Option('--gradient-checkpointing')] = False,
     logging_steps: Annotated[int, typer.Option('--logging-steps')] = 20,
     save_steps: Annotated[int, typer.Option('--save-steps')] = 1_000,
+    save_total_limit: Annotated[
+        int | None,
+        typer.Option('--save-total-limit', help='Keep at most N step checkpoints; None = all.'),
+    ] = 3,
     eval_data_dir: Annotated[
         Path, typer.Option('--eval-data-dir', help='Packed iGSM validation dataset dir.')
     ] = Path('data/igsm_val'),
@@ -212,6 +242,19 @@ def train(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     report_to = report_to or []
+
+    # Resolve LR scheduler kwargs: JSON if given, else the documented cosine default.
+    if lr_scheduler_kwargs is not None:
+        try:
+            sched_kwargs: dict[str, Any] = json.loads(lr_scheduler_kwargs)
+        except json.JSONDecodeError as e:
+            raise typer.BadParameter(
+                f'--lr-scheduler-kwargs must be a JSON object: {e}'
+            ) from e
+    elif lr_scheduler_type == 'cosine_with_min_lr':
+        sched_kwargs = {'min_lr_rate': 0.01}
+    else:
+        sched_kwargs = {}
 
     if smoke:
         # Tiny model + few steps on CPU, no wandb -- validates the full pipeline offline.
@@ -247,15 +290,28 @@ def train(
         )
         dataloader_num_workers = dataloader_num_workers
 
-    typer.echo(
-        f'Building GPT-2 + RoPE ({"smoke" if smoke else "12-12"}): '
-        f'{config.num_hidden_layers}L {config.n_embd}d {config.num_attention_heads}h'
-    )
-    if bf16 and attn_implementation == 'flash_attention_2':
-        config.dtype = torch.bfloat16
-    model = build_gpt2_rope(config, attn_implementation=attn_implementation)
+    if init_from is not None:
+        typer.echo(f'Initializing model weights from checkpoint {init_from} (fresh optimizer)...')
+        model = GPT2LMHeadModelWithRoPE.from_pretrained(
+            init_from, attn_implementation=attn_implementation
+        )
+        recompute_rope_inv_freq(model)
+        # requires_grad=False does not survive save_pretrained/from_pretrained; re-freeze the
+        # dead absolute positional embedding so continued training matches from-scratch.
+        model.transformer.wpe.requires_grad_(False)
+        tag = 'from-checkpoint'
+    else:
+        if bf16 and attn_implementation == 'flash_attention_2':
+            config.dtype = torch.bfloat16
+        model = build_gpt2_rope(config, attn_implementation=attn_implementation)
+        tag = 'smoke' if smoke else '12-12'
     if bf16 and attn_implementation == 'flash_attention_2':
         model.to(torch.bfloat16)
+    dims = (
+        f'{model.config.num_hidden_layers}L {model.config.n_embd}d '
+        f'{model.config.num_attention_heads}h'
+    )
+    typer.echo(f'GPT-2 + RoPE ({tag}): {dims}')
 
     typer.echo(f'Loading packed dataset from {data_dir}...')
     if streaming:
@@ -313,8 +369,8 @@ def train(
         adam_beta1=adam_beta1,
         adam_beta2=adam_beta2,
         adam_epsilon=adam_epsilon,
-        lr_scheduler_type='cosine_with_min_lr',
-        lr_scheduler_kwargs={'min_lr_rate': 0.01},
+        lr_scheduler_type=lr_scheduler_type,
+        lr_scheduler_kwargs=sched_kwargs,
         bf16=bf16,
         torch_compile=True,
         gradient_checkpointing=gradient_checkpointing,
@@ -322,7 +378,7 @@ def train(
         logging_first_step=True,
         save_strategy='steps',
         save_steps=save_steps,
-        save_total_limit=3,
+        save_total_limit=save_total_limit,
         eval_strategy='steps' if eval_dataset is not None else 'no',
         eval_steps=eval_steps,
         per_device_eval_batch_size=per_device_eval_batch_size,

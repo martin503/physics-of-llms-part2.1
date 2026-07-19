@@ -287,3 +287,21 @@ def build_gpt2_rope(
     # cause we are NOT resuming trainings.
     model.transformer.wpe.requires_grad_(False)
     return model
+
+
+def recompute_rope_inv_freq(model: GPT2LMHeadModelWithRoPE) -> None:
+    """Recompute every RoPE ``inv_freq`` buffer in-place from ``config.rope_theta``.
+
+    Belt-and-suspenders for continued training from an older checkpoint saved before
+    ``inv_freq`` was made ``persistent``: such checkpoints lack the buffer, so
+    ``from_pretrained`` leaves it as uninitialised heap memory (~1e38), ``pos * inv_freq``
+    overflows to ``inf``/``NaN`` cosines -> garbage rotations and ~0% eval accuracy. With
+    ``persistent=True`` checkpoints the loaded values are identical, so this is a no-op and
+    always safe.
+    """
+    base = getattr(model.config, 'rope_theta', 10000.0)
+    for block in model.transformer.h:
+        rotary = block.attn.rotary_emb
+        dim = rotary.inv_freq.shape[0] * 2
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+        rotary.inv_freq.copy_(inv_freq)

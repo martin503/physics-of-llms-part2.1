@@ -36,9 +36,10 @@ Examples::
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import torch
 import typer
@@ -46,7 +47,12 @@ from transformers import GPT2TokenizerFast, TrainerCallback
 
 from src.data.igsm import VOCAB_SIZE, generate_problems, load_igsm_stream
 from src.data.igsm_stream import build_igsm_stream, seed_offsets_for_shards
-from src.model.gpt2_rope import build_gpt2_config, build_gpt2_rope
+from src.model.gpt2_rope import (
+    GPT2LMHeadModelWithRoPE,
+    build_gpt2_config,
+    build_gpt2_rope,
+    recompute_rope_inv_freq,
+)
 
 DEFAULT_CONTEXT_LENGTH = 768
 
@@ -96,6 +102,15 @@ def train(
     output_dir: Annotated[
         Path, typer.Option('--output-dir', help='Where to write checkpoints.')
     ] = Path('models/gpt2-rope-igsm-pack'),
+    init_from: Annotated[
+        Path | None,
+        typer.Option(
+            '--init-from',
+            help='Initialize model weights from a saved checkpoint dir (model weights only; '
+            'fresh optimizer/scheduler, step count from 0). Use to continue training from a '
+            'trainer.save_model() output, e.g. models/100k_model/gpt-rope-igsm-fixed.',
+        ),
+    ] = None,
     data_dir: Annotated[
         Path | None,
         typer.Option(
@@ -114,6 +129,17 @@ def train(
         int, typer.Option('--gradient-accumulation-steps')
     ] = 16,
     learning_rate: Annotated[float, typer.Option('--learning-rate')] = 2e-3,
+    lr_scheduler_type: Annotated[
+        str, typer.Option('--lr-scheduler-type', help='transformers LR scheduler name.')
+    ] = 'cosine_with_min_lr',
+    lr_scheduler_kwargs: Annotated[
+        str | None,
+        typer.Option(
+            '--lr-scheduler-kwargs',
+            help='Scheduler kwargs as a JSON object, e.g. \'{"min_lr_rate": 0.01}\'. '
+            'Defaults to {"min_lr_rate": 0.01} for cosine_with_min_lr, else {}.',
+        ),
+    ] = None,
     max_steps: Annotated[
         int, typer.Option('--max-steps', help='Paper uses 100k; 5k is a working default.')
     ] = 5_000,
@@ -136,6 +162,10 @@ def train(
     ] = False,
     logging_steps: Annotated[int, typer.Option('--logging-steps')] = 20,
     save_steps: Annotated[int, typer.Option('--save-steps')] = 1_000,
+    save_total_limit: Annotated[
+        int | None,
+        typer.Option('--save-total-limit', help='Keep at most N step checkpoints; None = all.'),
+    ] = 3,
     per_device_eval_batch_size: Annotated[int, typer.Option('--per-device-eval-batch-size')] = 1,
     eval_steps: Annotated[
         int, typer.Option('--eval-steps', help='Validate every N optimizer steps.')
@@ -207,6 +237,17 @@ def train(
     output_dir.mkdir(parents=True, exist_ok=True)
     report_to = report_to or []
 
+    # Resolve LR scheduler kwargs: JSON if given, else the documented cosine default.
+    if lr_scheduler_kwargs is not None:
+        try:
+            sched_kwargs: dict[str, Any] = json.loads(lr_scheduler_kwargs)
+        except json.JSONDecodeError as e:
+            raise typer.BadParameter(f'--lr-scheduler-kwargs must be a JSON object: {e}') from e
+    elif lr_scheduler_type == 'cosine_with_min_lr':
+        sched_kwargs = {'min_lr_rate': 0.01}
+    else:
+        sched_kwargs = {}
+
     if smoke:
         # Tiny model + few steps on CPU, sdpa (FlashAttention needs CUDA), no wandb --
         # validates the full TRL packing pipeline offline.
@@ -235,16 +276,28 @@ def train(
     else:
         config = build_gpt2_config(vocab_size=VOCAB_SIZE, n_positions=max(2048, context_length))
 
-    typer.echo(
-        f'Building GPT-2 + RoPE ({"smoke" if smoke else "12-12"}): '
-        f'{config.num_hidden_layers}L {config.n_embd}d {config.num_attention_heads}h, '
-        f'attn={attn_implementation}'
-    )
-    if bf16 and attn_implementation == 'flash_attention_2':
-        config.dtype = torch.bfloat16
-    model = build_gpt2_rope(config, attn_implementation=attn_implementation)
+    if init_from is not None:
+        typer.echo(f'Initializing model weights from checkpoint {init_from} (fresh optimizer)...')
+        model = GPT2LMHeadModelWithRoPE.from_pretrained(
+            init_from, attn_implementation=attn_implementation
+        )
+        recompute_rope_inv_freq(model)
+        # requires_grad=False does not survive save_pretrained/from_pretrained; re-freeze the
+        # dead absolute positional embedding so continued training matches from-scratch.
+        model.transformer.wpe.requires_grad_(False)
+        tag = 'from-checkpoint'
+    else:
+        if bf16 and attn_implementation == 'flash_attention_2':
+            config.dtype = torch.bfloat16
+        model = build_gpt2_rope(config, attn_implementation=attn_implementation)
+        tag = 'smoke' if smoke else '12-12'
     if bf16 and attn_implementation == 'flash_attention_2':
         model.to(torch.bfloat16)
+    dims = (
+        f'{model.config.num_hidden_layers}L {model.config.n_embd}d '
+        f'{model.config.num_attention_heads}h'
+    )
+    typer.echo(f'Building GPT-2 + RoPE ({tag}): {dims}, attn={attn_implementation}')
 
     # GPT-2 tokenizer: only used for pad/eos resolution + sample logging (data is
     # pre-tokenized by iGSM, so SFTTrainer skips tokenization). GPT-2 has eos (50256);
@@ -300,15 +353,15 @@ def train(
         adam_beta1=adam_beta1,
         adam_beta2=adam_beta2,
         adam_epsilon=adam_epsilon,
-        lr_scheduler_type='cosine_with_min_lr',
-        lr_scheduler_kwargs={'min_lr_rate': 0.01},
+        lr_scheduler_type=lr_scheduler_type,
+        lr_scheduler_kwargs=sched_kwargs,
         bf16=bf16,
         gradient_checkpointing=gradient_checkpointing,
         logging_steps=logging_steps,
         logging_first_step=True,
         save_strategy='steps',
         save_steps=save_steps,
-        save_total_limit=3,
+        save_total_limit=save_total_limit,
         eval_strategy='steps' if eval_dataset is not None else 'no',
         eval_steps=eval_steps,
         per_device_eval_batch_size=per_device_eval_batch_size,

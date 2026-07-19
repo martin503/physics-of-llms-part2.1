@@ -111,21 +111,41 @@ def get_bins(split: str) -> list[int]:
 
 
 def _generate_chunk(
-    num_problems: int, seed: int, bins: list[int], med_cfg: dict[str, Any]
+    num_problems: int,
+    seed: int,
+    bins: list[int],
+    med_cfg: dict[str, Any],
+    op: int | None = None,
 ) -> list[list[int]]:
-    """Generate ``num_problems`` token streams in one process (worker for the pool)."""
+    """Generate ``num_problems`` token streams in one process (worker for the pool).
+
+    When ``op`` is set, every problem is pinned to exactly that many reasoning steps via
+    iGSM's ``IdGen(op=...)`` (which rejection-samples until ``problem.n_op == op``). This
+    rebalances the op-count distribution away from the default ``min(U, U)`` skew; the
+    per-unit round-robin assignment in :func:`_generate_batch_in_pool` picks the value.
+    """
     ensure_igsm_submodule()
     from data_gen.pretrain.id_gen import IdGen  # type: ignore[import-not-found]
     from tools.tools import fix_seed  # type: ignore[import-not-found]
 
     fix_seed(seed)  # sets random + numpy seeds (NOT torch); per-worker seed -> distinct problems
-    gen = IdGen(**med_cfg)  # gen_prob mutates the instance, so one generator per unit
+    cfg = med_cfg
+    if op is not None:
+        # Pin the exact op count; max_op must be >= op for the target to be reachable.
+        cfg = {**med_cfg, 'op': op, 'max_op': max(med_cfg.get('max_op', 0), op)}
+    gen = IdGen(**cfg)  # gen_prob mutates the instance, so one generator per unit
     streams: list[list[int]] = []
     for _ in range(num_problems):
         gen.gen_prob(bins, p_format='pq')  # type: ignore[attr-defined]
         token_id = list(gen.token_id)  # type: ignore[attr-defined]
         assert token_id, 'gen_prob produced an empty token_id'
         assert token_id[0] == PROB_BOS and token_id[-1] == EOS, 'unexpected iGSM token layout'
+        if op is not None:
+            # gen_prob already rejection-samples to n_op == op_, but assert on every problem
+            # so the realized distribution is guaranteed to match the per-unit assignment.
+            assert gen.problem.n_op == op, (  # type: ignore[union-attr]
+                f'op pin failed: want {op}, got {gen.problem.n_op}'  # type: ignore[union-attr]
+            )
         streams.append(token_id)
     return streams
 
@@ -164,6 +184,40 @@ def _fine_unit(num_problems: int, workers: int) -> int:
     return max(1, min(256, unit or 1))
 
 
+def _normalize_op_spec(
+    op_spec: int | tuple[int, int] | list[int] | None,
+) -> list[int] | None:
+    """Normalize an op-distribution spec to a validated list of op counts (or None).
+
+    The default iGSM-med op count is ``min(U(1..max_op), U(1..max_op))`` -- a distribution
+    that decreases linearly, so high op counts are rare (op=15 is ~29x rarer than op=1).
+    Pinning/choosing op counts rebalances this (e.g. to up-sample hard problems).
+
+    * ``None``        -> natural iGSM distribution (no pinning).
+    * ``int``         -> pin that single op count for every problem.
+    * ``(lo, hi)``    -> uniform over the inclusive integer range ``[lo, hi]``.
+    * ``list[int]``   -> uniform over exactly those op counts.
+    """
+    if op_spec is None:
+        return None
+    if isinstance(op_spec, bool):  # bool is an int subclass; reject it explicitly
+        raise TypeError('op_spec must be an int, (lo, hi), or list[int], not bool')
+    if isinstance(op_spec, int):
+        ops = [op_spec]
+    elif isinstance(op_spec, tuple):
+        if len(op_spec) != 2:
+            raise ValueError(f'range op_spec must be (lo, hi), got {op_spec}')
+        lo, hi = op_spec
+        ops = list(range(lo, hi + 1))
+    else:
+        ops = list(op_spec)
+    if not ops:
+        raise ValueError('op_spec resolved to an empty list of op counts')
+    if any(not isinstance(o, int) or isinstance(o, bool) or o < 1 for o in ops):
+        raise ValueError(f'op counts must be positive integers, got {ops}')
+    return ops
+
+
 def generate_problems(
     *,
     num_problems: int,
@@ -171,6 +225,7 @@ def generate_problems(
     workers: int = 8,
     seed: int = 0,
     med_cfg: dict[str, Any] | None = None,
+    op: int | None = None,
 ) -> list[list[int]]:
     """Generate ``num_problems`` tokenized iGSM problems for ``split`` across ``workers``.
 
@@ -181,15 +236,21 @@ def generate_problems(
     process-level seeds are required to avoid duplicate problems). Work is split into many
     fine units (see :func:`_fine_unit`) so the pool rebalances heavy-tailed stragglers; with
     ``workers <= 1`` generation runs inline in a single ``IdGen``.
+
+    When ``op`` is set, every problem is pinned to that exact reasoning-step count (see
+    :func:`_generate_chunk`). For a multi-op distribution use :func:`generate_to_dir`
+    with ``op_spec``.
     """
     med_cfg = IGSM_MED if med_cfg is None else med_cfg
+    if op is not None:
+        med_cfg = {**med_cfg, 'max_op': max(med_cfg.get('max_op', 0), op)}
     bins = get_bins(split)
     if workers <= 1 or num_problems <= 0:
-        return _generate_chunk(max(num_problems, 0), seed, bins, med_cfg)
+        return _generate_chunk(max(num_problems, 0), seed, bins, med_cfg, op=op)
 
     unit = _fine_unit(num_problems, workers)
     counts = _unit_counts(num_problems, unit)
-    tasks = [(c, seed + j, bins, med_cfg) for j, c in enumerate(counts)]
+    tasks = [(c, seed + j, bins, med_cfg, op) for j, c in enumerate(counts)]
 
     streams: list[list[int]] = []
     with ProcessPoolExecutor(max_workers=workers, initializer=ensure_igsm_submodule) as pool:
@@ -207,6 +268,8 @@ def _generate_batch_in_pool(
     med_cfg: dict[str, Any],
     *,
     unit: int | None = None,
+    op_spec: int | tuple[int, int] | list[int] | None = None,
+    unit_start_index: int = 0,
 ) -> list[list[int]]:
     """Generate one batch's problems on a *persistent* pool (workers reuse the IdGen import).
 
@@ -216,15 +279,26 @@ def _generate_batch_in_pool(
     the caller must pass ``base_seed`` values spaced by at least the number of units per batch
     (see the stride computed in :func:`generate_to_dir`) so seeds are globally unique and
     duplicate-free across batches.
+
+    When ``op_spec`` is given, each unit is pinned to one op count via round-robin over the
+    GLOBAL unit index ``(unit_start_index + j) % len(op_list)``. One ``IdGen`` emits a single
+    op count (``op_`` is sampled once in ``__init__``), so the per-unit granularity is the
+    natural place to assign op, and round-robin makes the chosen distribution balanced
+    (e.g. ``op_range 11-15`` -> ~equal problems per op). The caller passes
+    ``unit_start_index = batch_index * stride`` so the index is stable on resume.
     """
     if num_problems <= 0:
         return []
     if unit is None:
         unit = _fine_unit(num_problems, workers)
     counts = _unit_counts(num_problems, unit)
-    futures = [
-        pool.submit(_generate_chunk, c, base_seed + j, bins, med_cfg) for j, c in enumerate(counts)
-    ]
+    op_list = _normalize_op_spec(op_spec)
+    futures = []
+    for j, c in enumerate(counts):
+        unit_op = None if op_list is None else op_list[(unit_start_index + j) % len(op_list)]
+        futures.append(
+            pool.submit(_generate_chunk, c, base_seed + j, bins, med_cfg, op=unit_op)
+        )
     streams: list[list[int]] = []
     for f in futures:
         streams.extend(f.result())
@@ -370,6 +444,7 @@ def generate_to_dir(
     overwrite: bool = False,
     pack: bool = True,
     problem_generator: Callable[..., list[list[int]]] | None = None,
+    op_spec: int | tuple[int, int] | list[int] | None = None,
 ) -> dict[str, Any]:
     """Generate ``num_problems`` iGSM problems, writing them as resumable parquet shards.
 
@@ -391,12 +466,20 @@ def generate_to_dir(
             per window). If False, write **raw** problems (one variable-length row per problem)
             for online packing at train time (see :func:`load_igsm_stream`).
         problem_generator: Injectable generator (defaults to the real iGSM one) for testing.
+        op_spec: Op-count distribution to generate. ``None`` = natural iGSM skew; an ``int``
+            pins one exact op count; a ``(lo, hi)`` tuple or ``list[int]`` makes the dataset
+            uniform over those op counts (assigned per unit by round-robin). ``max_op`` is
+            auto-raised to cover the largest op. See :func:`_normalize_op_spec`.
 
     Returns:
         A stats dict (problems, batches, shards, rows, pack, ...).
     """
     out = Path(out)
     med_cfg = IGSM_MED if med_cfg is None else med_cfg
+    op_list = _normalize_op_spec(op_spec)
+    if op_list is not None:
+        # max_op must be >= every pinned op for the target op count to be reachable.
+        med_cfg = {**med_cfg, 'max_op': max(med_cfg.get('max_op', 0), max(op_list))}
 
     if overwrite and out.exists():
         shutil.rmtree(out)
@@ -420,12 +503,15 @@ def generate_to_dir(
     bins = get_bins(split)
     pbar = tqdm(total=num_problems, desc=f'gen iGSM-{split}', unit='prob', dynamic_ncols=True)
 
-    def gen(num: int, base_seed: int) -> list[list[int]]:
+    def gen(num: int, base_seed: int, unit_start_index: int) -> list[list[int]]:
         if problem_generator is not None:
             return problem_generator(
                 num_problems=num, split=split, workers=workers, seed=base_seed, med_cfg=med_cfg
             )
-        return _generate_batch_in_pool(pool, num, workers, base_seed, bins, med_cfg, unit=unit)
+        return _generate_batch_in_pool(
+            pool, num, workers, base_seed, bins, med_cfg, unit=unit,
+            op_spec=op_list, unit_start_index=unit_start_index,
+        )
 
     pool: ProcessPoolExecutor | None = None
     if problem_generator is None:
@@ -436,7 +522,7 @@ def generate_to_dir(
             if b in done:
                 pbar.update(batch_count)
                 continue
-            streams = gen(batch_count, seed + b * stride)
+            streams = gen(batch_count, seed + b * stride, b * stride)
             if pack:
                 rows = pack_sequences(streams, context_length=context_length)
             else:
@@ -460,7 +546,15 @@ def generate_to_dir(
         'rows': total_rows,
         'pack': pack,
         'context_length': context_length if pack else None,
+        'op_distribution': op_list,
+        'med_cfg': med_cfg,
     }
+    if op_list is not None:
+        per_op = num_problems // len(op_list)
+        typer.echo(
+            f'  op distribution: uniform over {op_list} (~{per_op} problems/op); '
+            f'med_cfg={med_cfg}'
+        )
     if pack:
         typer.echo(
             f'  {num_problems} problems -> {len(shards)} shards, {total_rows} packed windows '
@@ -517,8 +611,64 @@ def generate(
             'time. --pack (default): pack into fixed context_length windows.',
         ),
     ] = False,
+    op: Annotated[
+        int | None,
+        typer.Option(
+            '--op',
+            help='Pin an EXACT reasoning-step count for every problem (overrides the natural '
+            'min(U,U) skew). E.g. --op 15. Mutually exclusive with --op-range.',
+        ),
+    ] = None,
+    op_range: Annotated[
+        str | None,
+        typer.Option(
+            '--op-range',
+            help='Make the dataset uniform over an inclusive op-count range, e.g. '
+            '--op-range 11-15. Mutually exclusive with --op.',
+        ),
+    ] = None,
+    max_op: Annotated[
+        int | None,
+        typer.Option(
+            '--max-op',
+            help='Override iGSM max_op (default 15). Auto-raised to cover --op/--op-range.',
+        ),
+    ] = None,
+    max_edge: Annotated[
+        int | None, typer.Option('--max-edge', help='Override iGSM max_edge (default 20).')
+    ] = None,
 ) -> None:
     """Generate an iGSM-med dataset (resumable, batched, with a progress bar)."""
+    if op is not None and op_range is not None:
+        raise typer.BadParameter('use either --op or --op-range, not both.')
+
+    op_spec: int | tuple[int, int] | None
+    if op_range is not None:
+        parts = op_range.split('-')
+        if len(parts) != 2:
+            raise typer.BadParameter(
+                f'--op-range expects LO-HI (e.g. 11-15), got {op_range!r}'
+            )
+        try:
+            lo, hi = int(parts[0]), int(parts[1])
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f'--op-range bounds must be integers, got {op_range!r}'
+            ) from exc
+        if lo < 1 or hi < 1:
+            raise typer.BadParameter(f'--op-range bounds must be >= 1, got {lo}-{hi}')
+        if lo > hi:
+            raise typer.BadParameter(f'--op-range LO must be <= HI, got {lo}-{hi}')
+        op_spec = (lo, hi)
+    else:
+        op_spec = op
+
+    med_cfg: dict[str, Any] = dict(IGSM_MED)
+    if max_op is not None:
+        med_cfg['max_op'] = max_op
+    if max_edge is not None:
+        med_cfg['max_edge'] = max_edge
+
     generate_to_dir(
         out,
         num_problems,
@@ -529,6 +679,8 @@ def generate(
         context_length=context_length,
         overwrite=overwrite,
         pack=not raw,
+        med_cfg=med_cfg,
+        op_spec=op_spec,
     )
 
 

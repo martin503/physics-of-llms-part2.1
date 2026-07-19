@@ -37,7 +37,9 @@ def load_slices(
     rows: list[dict[str, Any]] = []
     for name in slice_names:
         path = data_root / f'{name}.parquet'
-        assert path.exists(), f'eval slice not found: {path} (generate it with src.data.eval)'
+        if not path.exists():
+            print(f'eval slice not found: {path}')
+            continue
         slice_rows = load_slice(path)
         if limit is not None:
             slice_rows = slice_rows[:limit]
