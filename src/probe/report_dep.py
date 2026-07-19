@@ -299,7 +299,7 @@ _TEMPLATE = r"""<!doctype html>
   }
   .left-col { display: flex; flex-direction: column; gap: 14px; flex: 1 1 40%; min-width: 0; }
   .text-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-  .cm-card { flex: 0 0 auto; margin-bottom: 0; }
+  .cm-card { flex: 0 0 auto; margin-bottom: 0; padding: 12px 12px; }
   .graph-panel { flex: 1 1 60%; }
   .chip {
     display: inline-block; background: var(--chip-bg); color: var(--ink-2);
@@ -344,17 +344,17 @@ _TEMPLATE = r"""<!doctype html>
   }
   #tooltip .row { display: flex; gap: 8px; justify-content: space-between; }
   #tooltip .muted { color: var(--muted); }
-  .cm-grid { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
+  .cm-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
   .cm {
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-    padding: 12px 14px;
+    padding: 10px 12px;
   }
   .cm h3 { margin: 0 0 2px; font-size: 13px; }
   .cm .metrics { color: var(--ink-2); font-size: 12px; margin-bottom: 8px; }
   .cm table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  .cm th { font-weight: 400; color: var(--muted); font-size: 11px; padding: 3px 8px; }
+  .cm th { font-weight: 400; color: var(--muted); font-size: 11px; padding: 3px 5px; }
   .cm td {
-    border: 1px solid var(--grid); text-align: right; padding: 6px 10px; min-width: 76px;
+    border: 1px solid var(--grid); text-align: right; padding: 5px 7px; min-width: 58px;
     font-size: 13px;
   }
   .cm td .pct { color: var(--muted); font-size: 11px; margin-left: 5px; }
@@ -369,13 +369,13 @@ _TEMPLATE = r"""<!doctype html>
   .mx th.coltop > span {
     position: absolute; bottom: 4px; left: 50%;
     transform: rotate(-45deg); transform-origin: bottom left;
-    font: 9px/1 inherit; font-weight: 400; color: var(--muted); white-space: nowrap;
+    font-size: 9px; line-height: 1; font-weight: 400; color: var(--muted); white-space: nowrap;
   }
   .mx th.rowlab {
-    text-align: right; font: 9px/1 inherit; font-weight: 400; color: var(--muted);
+    text-align: right; font-size: 9px; line-height: 1; font-weight: 400; color: var(--muted);
     padding: 0 5px 0 0; white-space: nowrap;
   }
-  .mx td { width: 15px; height: 15px; padding: 0; border: 1px solid var(--surface); aspect-ratio: 1 / 1; }
+  .mx td { width: 15px; height: 15px; padding: 0; border: 1px solid var(--surface); line-height: 0; }
   .mx td.tp { background: var(--good); }
   .mx td.tn { background: color-mix(in srgb, var(--good) 22%, var(--surface)); }
   .mx td.fn { background: var(--bad); }
