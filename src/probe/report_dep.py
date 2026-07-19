@@ -88,6 +88,7 @@ def _problem_payload(
         'layers': [str(name) for name in problem.ln],  # layer names, index = params[].layer
         'desc': [str(s) for s in problem.problem[:-1]],
         'question': str(problem.problem[-1]),
+        'solution': [str(s) for s in problem.solution],
         'params': params,
         'nPairsExpected': n * (n - 1),
         'edges': edges,
@@ -204,7 +205,7 @@ _TEMPLATE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>dep(A, B) probe report</title>
 <style>
-  :root {
+  :root, :root[data-theme="light"] {
     color-scheme: light;
     --surface: #fcfcfb; --page: #f9f9f7;
     --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
@@ -214,7 +215,7 @@ _TEMPLATE = r"""<!doctype html>
     --lay-0: #2a78d6; --lay-1: #1baf7a; --lay-2: #eda100; --lay-3: #4a3aa7; --lay-4: #e87ba4;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       color-scheme: dark;
       --surface: #1a1a19; --page: #0d0d0d;
       --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
@@ -224,13 +225,28 @@ _TEMPLATE = r"""<!doctype html>
       --lay-0: #3987e5; --lay-1: #199e70; --lay-2: #c98500; --lay-3: #9085e9; --lay-4: #d55181;
     }
   }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+    --good: #0ca30c; --bad: #e66767; --accent: #3987e5; --accent-b: #9085e9;
+    --chip-bg: #2c2c2a;
+    --lay-0: #3987e5; --lay-1: #199e70; --lay-2: #c98500; --lay-3: #9085e9; --lay-4: #d55181;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--page); color: var(--ink);
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   .wrap { max-width: 1440px; margin: 0 auto; padding: 16px 20px 40px; }
+  .topbar { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
   h1 { font-size: 19px; margin: 0 0 10px; }
+  .theme-btn {
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+    color: var(--ink-2); padding: 5px 12px; font: 12px inherit; cursor: pointer;
+  }
+  .theme-btn:hover { color: var(--ink); }
   h2 { font-size: 15px; margin: 0 0 8px; }
   .card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
@@ -250,6 +266,7 @@ _TEMPLATE = r"""<!doctype html>
     font: inherit; cursor: pointer;
   }
   .seg button.on { background: var(--accent); color: #fff; }
+  .navgrid { display: flex; flex-direction: column; gap: 6px; }
   /* problem grid: columns = op count, rows = seed slots */
   .probgrid { border-collapse: collapse; }
   .probgrid th {
@@ -280,7 +297,9 @@ _TEMPLATE = r"""<!doctype html>
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
     padding: 14px 16px; min-width: 0;
   }
-  .text-panel { flex: 1 1 40%; overflow-y: auto; max-height: 780px; }
+  .left-col { display: flex; flex-direction: column; gap: 14px; flex: 1 1 40%; min-width: 0; }
+  .text-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .cm-card { flex: 0 0 auto; margin-bottom: 0; }
   .graph-panel { flex: 1 1 60%; }
   .chip {
     display: inline-block; background: var(--chip-bg); color: var(--ink-2);
@@ -293,9 +312,9 @@ _TEMPLATE = r"""<!doctype html>
   .desc mark { border-radius: 3px; color: inherit; padding: 0 1px; }
   .desc mark.hlA { background: color-mix(in srgb, var(--accent) 28%, transparent); }
   .desc mark.hlB { background: color-mix(in srgb, var(--accent-b) 30%, transparent); }
-  .question { color: var(--muted); font-style: italic; border-top: 1px dashed var(--grid); margin-top: 10px; padding-top: 8px; }
-  .question .note { font-size: 11px; display: block; font-style: normal; }
-  .stats { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .dropnote { color: var(--muted); font-size: 11px; border-top: 1px dashed var(--grid); margin-top: 10px; padding-top: 8px; }
+  .question { color: var(--muted); font-style: italic; margin-top: 4px; }
+  .stats { color: var(--muted); font-size: 12px; margin: 2px 0 10px; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
   svg.graph { width: 100%; height: auto; display: block; }
   .node circle { stroke-width: 1.4; cursor: pointer; }
@@ -356,7 +375,7 @@ _TEMPLATE = r"""<!doctype html>
     text-align: right; font: 9px/1 inherit; font-weight: 400; color: var(--muted);
     padding: 0 5px 0 0; white-space: nowrap;
   }
-  .mx td { width: 15px; height: 15px; padding: 0; border: 1px solid var(--surface); }
+  .mx td { width: 15px; height: 15px; padding: 0; border: 1px solid var(--surface); aspect-ratio: 1 / 1; }
   .mx td.tp { background: var(--good); }
   .mx td.tn { background: color-mix(in srgb, var(--good) 22%, var(--surface)); }
   .mx td.fn { background: var(--bad); }
@@ -364,14 +383,14 @@ _TEMPLATE = r"""<!doctype html>
   .mx td.na { background: var(--chip-bg); }
   .mx-legend { display: flex; gap: 16px; font-size: 12px; margin-top: 8px; align-items: center; }
   .mx-legend .sw { width: 13px; height: 13px; display: inline-block; border-radius: 3px; margin-right: 5px; vertical-align: -2px; }
-  @media (max-width: 1020px) { .main { flex-direction: column; } .text-panel { max-height: none; } }
+  @media (max-width: 1020px) { .main { flex-direction: column; } .text-panel { max-height: 480px; } }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>dep(A, B) V-probe — predictions vs ground truth</h1>
-  <div class="card">
-    <dl class="meta" id="meta"></dl>
+  <div class="topbar">
+    <h1>dep(A, B) V-probe — predictions vs ground truth</h1>
+    <button class="theme-btn" id="themeToggle" title="toggle light/dark theme"></button>
   </div>
 
   <div class="card controls">
@@ -383,8 +402,21 @@ _TEMPLATE = r"""<!doctype html>
       </span>
     </div>
     <div class="control">
-      <h2>problem — columns: difficulty (op count), rows: alternative problems</h2>
+      <h2>problem</h2>
       <table class="probgrid" id="probGrid"></table>
+    </div>
+    <div class="control">
+      <h2>navigate</h2>
+      <div class="navgrid">
+        <span class="seg">
+          <button id="prevProb" title="previous problem at this difficulty">▲ problem</button>
+          <button id="nextProb" title="next problem at this difficulty">problem ▼</button>
+        </span>
+        <span class="seg">
+          <button id="prevDiff" title="previous difficulty">◀ difficulty</button>
+          <button id="nextDiff" title="next difficulty">difficulty ▶</button>
+        </span>
+      </div>
     </div>
     <div class="control">
       <h2>shown outcomes</h2>
@@ -393,22 +425,38 @@ _TEMPLATE = r"""<!doctype html>
         <tr><th>dep&thinsp;=&thinsp;1</th><td><button data-cat="tp" class="on"></button></td><td><button data-cat="fn" class="on"></button></td></tr>
         <tr><th>dep&thinsp;=&thinsp;0</th><td><button data-cat="fp" class="on"></button></td><td><button data-cat="tn"></button></td></tr>
       </table>
-      <label class="hint" style="display:block;margin-top:6px"><input type="checkbox" id="hideIsolated" checked> hide unconnected variables</label>
+    </div>
+    <div class="control">
+      <h2>hide variables</h2>
+      <label class="hint" style="display:block"><input type="checkbox" id="hideIsolated" checked> hide unconnected</label>
+      <label class="hint" style="display:block;margin-top:4px"><input type="checkbox" id="showOnlyNecessary"> show only necessary</label>
     </div>
   </div>
 
   <div class="main">
-    <div class="panel text-panel">
-      <h2>Probe input</h2>
-      <div>
-        <span class="chip">[EOS]</span><span class="chip">[BOS]</span>
-        <span class="desc" id="desc"></span>
-        <span class="chip">[START]</span><span class="chip varA" id="chipA">A</span><span class="chip">[MID]</span><span class="chip varB" id="chipB">B</span><span class="chip">[END]</span>
+    <div class="left-col">
+      <div class="panel text-panel">
+        <h2>Probe input</h2>
+        <div class="stats" id="probStats"></div>
+        <div>
+          <span class="chip">[EOS]</span><span class="chip">[BOS]</span>
+          <span class="desc" id="desc"></span>
+          <span class="chip">[START]</span><span class="chip varA" id="chipA">A</span><span class="chip">[MID]</span><span class="chip varB" id="chipB">B</span><span class="chip">[END]</span>
+        </div>
+        <div class="dropnote">the following problem sections are not passed to the model:</div>
+        <div class="question" id="question"></div>
+        <div class="question" id="solution"></div>
+        <div class="hint">click a variable in the graph to set <b>A</b> (highlights its mentions),
+          click a second one to set <b>B</b>; click A again to clear.</div>
       </div>
-      <div class="question" id="question"></div>
-      <div class="stats" id="probStats"></div>
-      <div class="hint">click a variable in the graph to set <b>A</b> (highlights its mentions),
-        click a second one to set <b>B</b>; click A again to clear.</div>
+      <div class="card cm-card">
+        <h2>Confusion matrices</h2>
+        <span class="seg" id="scopeSeg">
+          <button data-scope="problem" class="on">this problem</button>
+          <button data-scope="all">whole test set</button>
+        </span>
+        <div class="cm-grid" id="cmGrid"></div>
+      </div>
     </div>
     <div class="panel graph-panel">
       <svg id="graph" class="graph" viewBox="0 0 760 760" role="img" aria-label="dependency graph"></svg>
@@ -417,17 +465,15 @@ _TEMPLATE = r"""<!doctype html>
   </div>
 
   <div class="card" style="margin-top:14px">
-    <h2>Confusion matrices</h2>
-    <span class="seg" id="scopeSeg">
-      <button data-scope="problem" class="on">this problem</button>
-      <button data-scope="all">whole test set</button>
-    </span>
-    <div class="cm-grid" id="cmGrid"></div>
-    <details id="matrixView">
-      <summary>dependency matrix — rows: A, columns: B, cell: outcome of dep(A, B)</summary>
+    <details id="matrixView" open>
+      <summary>full dependency matrix — rows: A, columns: B, cell: outcome of dep(A, B)</summary>
       <div class="mx-legend" id="mxLegend"></div>
       <div class="mx-scroll" id="mxWrap"></div>
     </details>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <dl class="meta" id="meta"></dl>
   </div>
 </div>
 <div id="tooltip"></div>
@@ -437,12 +483,13 @@ const DATA = __PAYLOAD__;
 
 // show/hideIsolated are read from the buttons/checkbox at load so browser form-state
 // restoration can never desync the controls from what is drawn
-const state = { model: 'pre', prob: 0, show: {}, hideIsolated: true,
+const state = { model: 'pre', prob: 0, show: {}, hideIsolated: true, showOnlyNecessary: false,
                 selA: null, selB: null, hover: null, scope: 'problem' };
 document.querySelectorAll('.cattbl button').forEach(b => {
   state.show[b.dataset.cat] = b.classList.contains('on');
 });
 state.hideIsolated = document.getElementById('hideIsolated').checked;
+state.showOnlyNecessary = document.getElementById('showOnlyNecessary').checked;
 
 const svg = document.getElementById('graph');
 const tooltip = document.getElementById('tooltip');
@@ -451,6 +498,22 @@ const CX = 380, CY = 380, R = 272, RLAB = 286;
 const CAT_NAMES = { tp: 'TP', fn: 'FN', fp: 'FP', tn: 'TN' };
 
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+/* ---------- theme toggle ---------- */
+const themeBtn = document.getElementById('themeToggle');
+function activeTheme() {
+  return document.documentElement.getAttribute('data-theme') ||
+    (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+}
+function applyTheme(theme, rerender) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('depReportTheme', theme);
+  themeBtn.textContent = theme === 'dark' ? '☀ light mode' : '🌙 dark mode';
+  if (rerender) renderAll();
+}
+themeBtn.addEventListener('click', () => applyTheme(activeTheme() === 'dark' ? 'light' : 'dark', true));
+const savedTheme = localStorage.getItem('depReportTheme');
+applyTheme(savedTheme || activeTheme(), false);
 function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 function prob() { return DATA.problems[state.prob]; }
 // edge tuple: [a, b, label, predPre, p1Pre, predRand, p1Rand]
@@ -542,6 +605,41 @@ document.querySelectorAll('.cattbl button').forEach(b => {
 document.getElementById('hideIsolated').addEventListener('change', e => {
   state.hideIsolated = e.target.checked; renderGraph();
 });
+document.getElementById('showOnlyNecessary').addEventListener('change', e => {
+  state.showOnlyNecessary = e.target.checked; renderGraph();
+});
+
+/* ---------- problem/difficulty navigation ---------- */
+function opsAndGroups() {
+  const ops = [...new Set(DATA.problems.map(p => p.nOp))].sort((a, b) => a - b);
+  const byOp = new Map(ops.map(op => [op, []]));
+  DATA.problems.forEach((p, i) => byOp.get(p.nOp).push(i));
+  return { ops, byOp };
+}
+function gotoProblem(delta) {
+  const { ops, byOp } = opsAndGroups();
+  const col = ops.indexOf(prob().nOp);
+  const list = byOp.get(ops[col]);
+  const row = list.indexOf(state.prob);
+  state.prob = list[(row + delta + list.length) % list.length];
+  state.selA = state.selB = null; state.hover = null;
+  renderAll();
+}
+function gotoDifficulty(delta) {
+  const { ops, byOp } = opsAndGroups();
+  const col = ops.indexOf(prob().nOp);
+  const list = byOp.get(ops[col]);
+  const row = list.indexOf(state.prob);
+  const nCol = (col + delta + ops.length) % ops.length;
+  const nList = byOp.get(ops[nCol]);
+  state.prob = nList[Math.min(row, nList.length - 1)];
+  state.selA = state.selB = null; state.hover = null;
+  renderAll();
+}
+document.getElementById('prevProb').addEventListener('click', () => gotoProblem(-1));
+document.getElementById('nextProb').addEventListener('click', () => gotoProblem(1));
+document.getElementById('prevDiff').addEventListener('click', () => gotoDifficulty(-1));
+document.getElementById('nextDiff').addEventListener('click', () => gotoDifficulty(1));
 
 /* ---------- graph ---------- */
 let edgeEls = [], nodeEls = [];
@@ -559,7 +657,8 @@ function renderGraph() {
   const nodeR = Math.max(3.5, Math.min(9, 260 / n));
   const styles = catStyles();
 
-  const visible = p.edges.filter(e => state.show[edgeCat(e)]);
+  const visible = p.edges.filter(e => state.show[edgeCat(e)] &&
+    (!state.showOnlyNecessary || (p.params[e[0]].nece && p.params[e[1]].nece)));
   const connected = new Set();
   visible.forEach(e => { connected.add(e[0]); connected.add(e[1]); });
 
@@ -624,6 +723,7 @@ function renderGraph() {
 
   for (let i = 0; i < n; i++) {
     if (state.hideIsolated && !connected.has(i)) continue;
+    if (state.showOnlyNecessary && !p.params[i].nece) continue;
     const par = p.params[i];
     const pos = nodePos(i, n);
     const g = document.createElementNS(NS, 'g');
@@ -762,8 +862,8 @@ function renderProbeInput() {
 
 function renderText() {
   const p = prob();
-  document.getElementById('question').innerHTML =
-    `${esc(p.question)}<span class="note">the question is dropped from the dep-probe input</span>`;
+  document.getElementById('question').textContent = p.question;
+  document.getElementById('solution').textContent = p.solution.join('. ') + '.';
   const nSkip = p.nPairsExpected - p.edges.length;
   document.getElementById('probStats').textContent =
     `difficulty: ${p.nOp} ops · seed ${p.seed} · ${p.params.length} variables · ` +
