@@ -53,6 +53,25 @@ app = typer.Typer(add_completion=False, help='Probes for the iGSM GPT2-RoPE mode
 DEFAULT_RUNS_DIR = Path('trained_probes')
 
 
+def _med_cfg_override(max_op: int | None, max_edge: int | None) -> dict[str, Any] | None:
+    """Build an iGSM-med config with `max_op`/`max_edge` overridden, or None to use defaults.
+
+    iGSM-med caps difficulty at `max_op=15` (the training range). Raising it lets the
+    generator emit harder out-of-distribution problems (the paper evaluates at op 20-23);
+    n_op is still sampled across `1..max_op`, so op>15 is rare -- scan/generate more.
+    """
+    from src.data.igsm import IGSM_MED
+
+    if max_op is None and max_edge is None:
+        return None
+    cfg = dict(IGSM_MED)
+    if max_op is not None:
+        cfg['max_op'] = max_op
+    if max_edge is not None:
+        cfg['max_edge'] = max_edge
+    return cfg
+
+
 def _setup_logging(log_file: Path | None = None) -> None:
     """Console logging for every command; tee into `log_file` for tracked training runs."""
     handlers: list[logging.Handler] = [logging.StreamHandler()]
@@ -179,8 +198,16 @@ def gen_data(
         typer.Option(
             '--seeds-file',
             help='JSON from `find-seeds`: generate rows for exactly those problem seeds '
-            '(overrides --n-problems/--seed-start/--split).',
+            '(overrides --n-problems/--seed-start/--split/--max-op/--max-edge).',
         ),
+    ] = None,
+    max_op: Annotated[
+        int | None,
+        typer.Option('--max-op', help='Override iGSM-med difficulty cap (default 15). Must match '
+                     'the value the seeds were found under; ignored when --seeds-file is given.'),
+    ] = None,
+    max_edge: Annotated[
+        int | None, typer.Option('--max-edge', help='Override iGSM-med graph-width cap (default 20).')
     ] = None,
 ) -> None:
     """Generate V-probe rows offline (multiprocess, resumable parquet shards + metadata)."""
@@ -191,15 +218,17 @@ def gen_data(
     if dep_all_pairs and target != 'dep':
         raise typer.BadParameter('--dep-all-pairs only applies to --target dep')
     seed_list = None
+    med_cfg = _med_cfg_override(max_op, max_edge)
     if seeds_file is not None:
         showcase = _json.loads(seeds_file.read_text(encoding='utf-8'))
         seed_list = showcase['seeds']
         split = showcase['split']  # the seeds are only meaningful under their own split
+        med_cfg = showcase.get('med_cfg', med_cfg)  # regenerate under the config they were found with
     _setup_logging()
     generate_rows_to_dir(
         out, n_problems, target=target, split=split, seed_start=seed_start, workers=workers,
         problems_per_shard=problems_per_shard, model_path=model_path, overwrite=overwrite,
-        dep_all_pairs=dep_all_pairs, seed_list=seed_list,
+        dep_all_pairs=dep_all_pairs, seed_list=seed_list, med_cfg=med_cfg,
     )
 
 
@@ -215,17 +244,28 @@ def find_seeds(
     ] = 0,
     max_scan: Annotated[int, typer.Option('--max-scan')] = 2_000,
     workers: Annotated[int, typer.Option('--workers')] = 8,
+    max_op: Annotated[
+        int | None,
+        typer.Option('--max-op', help='Override iGSM-med difficulty cap (default 15). Raise for '
+                     'harder out-of-distribution problems, e.g. 23 for the paper op-20-23 eval.'),
+    ] = None,
+    max_edge: Annotated[
+        int | None, typer.Option('--max-edge', help='Override iGSM-med graph-width cap (default 20).')
+    ] = None,
 ) -> None:
-    """Pick scattered showcase seeds: `--per-op` problems per difficulty (iGSM `n_op`, 1..15).
+    """Pick scattered showcase seeds: `--per-op` problems per difficulty (iGSM `n_op`).
 
-    Candidates are drawn randomly from a huge seed range, so the accepted seeds are
-    non-sequential and disjoint from training's sequential ranges. Feed the JSON to
-    `gen-data --seeds-file`."""
+    Difficulty runs `1..max_op` (15 by default; raise with `--max-op`). Candidates are drawn
+    randomly from a huge seed range, so the accepted seeds are non-sequential and disjoint
+    from training's sequential ranges. High op counts are rare (~1-2%), so filling their
+    buckets needs a large `--max-scan`. Feed the JSON to `gen-data --seeds-file` (which reads
+    back the same med_cfg)."""
     from src.probe.data import find_showcase_seeds
 
     _setup_logging()
     find_showcase_seeds(
-        out, per_op=per_op, split=split, scan_seed=scan_seed, max_scan=max_scan, workers=workers
+        out, per_op=per_op, split=split, scan_seed=scan_seed, max_scan=max_scan, workers=workers,
+        med_cfg=_med_cfg_override(max_op, max_edge),
     )
 
 

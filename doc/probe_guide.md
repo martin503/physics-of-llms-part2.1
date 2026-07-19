@@ -237,6 +237,37 @@ Sizing: iGSM-med problems have 12–72 candidate params (~1,200 ordered pairs pe
 average), so 200 problems ≈ 240k rows. `test` is inference-only (no-grad, bf16) — far cheaper
 per row than training.
 
+### Difficulty and problem count
+
+The report grid is **columns = difficulty (`n_op`), rows = alternative problems** at that
+difficulty. Two knobs control how it fills:
+
+- **More problems per difficulty (more rows):** the sequential `gen-data --n-problems N` route
+  above takes whatever `n_op` the seeds happen to land on (skewed low). For an evenly filled
+  grid use `find-seeds` instead — it scans scattered seeds and keeps `--per-op` of *each* op
+  count, then `gen-data --seeds-file` regenerates exactly those. `report-dep --n-problems`
+  caps how many of the dataset's problems are embedded (sorted by difficulty).
+
+  ```bash
+  uv run python -m src.probe.run find-seeds --per-op 4 --out data/probe/showcase_seeds.json
+  uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --seeds-file data/probe/showcase_seeds.json --out data/probe/vprobe_dep_showcase
+  ```
+
+- **Harder difficulties (op 16–23):** iGSM-med caps at `max_op=15` (the training range). Raise
+  it with `--max-op` to emit the paper's out-of-distribution eval difficulties (op 20–23). `n_op`
+  is still sampled across `1..max_op`, so high ops are rare (~1–2%) — give `find-seeds` a large
+  `--max-scan`. The chosen `max_op`/`max_edge` are stored in the seeds JSON's `med_cfg`, and
+  `gen-data --seeds-file` reads them back (and records them in the dataset metadata, so the report
+  regenerates each problem's text under the same config):
+
+  ```bash
+  uv run python -m src.probe.run find-seeds --per-op 3 --max-op 23 --max-scan 20000 --out data/probe/hard_seeds.json
+  uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --seeds-file data/probe/hard_seeds.json --out data/probe/vprobe_dep_hard
+  ```
+
+  A caveat worth stating in any writeup: op 16–23 is **outside the model's training range**, so
+  low scores there measure length/complexity generalization, not a probe failure.
+
 The report is a single self-contained HTML file: each problem's parameters on a circle, each
 tested pair as a directed edge A→B ("A depends on B"). Line style = true label (solid:
 dependency, dashed: none); colour = correctness (green right, red wrong, wrong edges also
