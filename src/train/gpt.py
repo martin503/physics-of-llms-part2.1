@@ -212,6 +212,14 @@ def train(
         int | None,
         typer.Option('--save-total-limit', help='Keep at most N step checkpoints; None = all.'),
     ] = 3,
+    save_only_model: Annotated[
+        bool,
+        typer.Option(
+            '--save-only-model',
+            help='Save only model weights at step checkpoints (skip optimizer/scheduler/RNG '
+            'state). ~3x smaller checkpoints, but mid-run resume is impossible.',
+        ),
+    ] = False,
     eval_data_dir: Annotated[
         Path, typer.Option('--eval-data-dir', help='Packed iGSM validation dataset dir.')
     ] = Path('data/igsm_val'),
@@ -379,6 +387,7 @@ def train(
         save_strategy='steps',
         save_steps=save_steps,
         save_total_limit=save_total_limit,
+        save_only_model=save_only_model,
         eval_strategy='steps' if eval_dataset is not None else 'no',
         eval_steps=eval_steps,
         per_device_eval_batch_size=per_device_eval_batch_size,

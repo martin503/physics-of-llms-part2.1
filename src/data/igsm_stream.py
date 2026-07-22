@@ -65,8 +65,12 @@ def _igsm_generator(
     bins = get_bins(split)
     for seed in seed_offsets:
         fix_seed(seed)  # seeds module-level random + numpy (NOT torch) -> distinct stream
-        gen = IdGen(**cfg)  # gen_prob mutates the instance, so one generator per seed
         while True:
+            # Fresh IdGen per problem: op_ is sampled in __init__, so re-instantiating re-draws
+            # it -> per-problem difficulty diversity. One IdGen would fix a single op count for
+            # the whole infinite stream. fix_seed stays outside the loop, so the per-seed RNG
+            # stream (and thus determinism) is unchanged.
+            gen = IdGen(**cfg)
             gen.gen_prob(bins, p_format='pq')  # type: ignore[attr-defined]
             token_id = list(gen.token_id)  # type: ignore[attr-defined]
             assert token_id and token_id[0] == PROB_BOS and token_id[-1] == EOS, (

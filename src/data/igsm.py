@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import math
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -119,10 +120,19 @@ def _generate_chunk(
 ) -> list[list[int]]:
     """Generate ``num_problems`` token streams in one process (worker for the pool).
 
+    A **fresh ``IdGen`` is created per problem** so each independently samples its op count
+    (``op_`` is drawn once in ``IdGen.__init__``). One ``IdGen`` would lock the whole chunk to
+    a single op count, producing long runs of same-difficulty problems that make shards (and
+    their packed windows) homogeneous; per-problem instantiation gives true per-problem op
+    diversity. Construction is cheap (attribute assignment + O(1) RNG draws); the cost lives
+    in ``gen_prob``'s rejection loop, which runs once per problem regardless. Mirrors the
+    per-problem pattern in ``src/data/eval.py``.
+
     When ``op`` is set, every problem is pinned to exactly that many reasoning steps via
-    iGSM's ``IdGen(op=...)`` (which rejection-samples until ``problem.n_op == op``). This
-    rebalances the op-count distribution away from the default ``min(U, U)`` skew; the
+    iGSM's ``IdGen(op=...)`` (which rejection-samples until ``problem.n_op == op``); the
     per-unit round-robin assignment in :func:`_generate_batch_in_pool` picks the value.
+    Determinism/duplicate-freeness is preserved: ``fix_seed(seed)`` runs once before the loop,
+    so each per-problem ``IdGen`` consumes the next draws of the seeded stream.
     """
     ensure_igsm_submodule()
     from data_gen.pretrain.id_gen import IdGen  # type: ignore[import-not-found]
@@ -133,16 +143,19 @@ def _generate_chunk(
     if op is not None:
         # Pin the exact op count; max_op must be >= op for the target to be reachable.
         cfg = {**med_cfg, 'op': op, 'max_op': max(med_cfg.get('max_op', 0), op)}
-    gen = IdGen(**cfg)  # gen_prob mutates the instance, so one generator per unit
     streams: list[list[int]] = []
     for _ in range(num_problems):
+        # Fresh IdGen per problem: op_ is sampled in __init__, so re-instantiating re-draws it
+        # (per-problem difficulty diversity). Reusing one instance would fix a single op count
+        # for the whole chunk (see also src/data/eval.py).
+        gen = IdGen(**cfg)
         gen.gen_prob(bins, p_format='pq')  # type: ignore[attr-defined]
         token_id = list(gen.token_id)  # type: ignore[attr-defined]
         assert token_id, 'gen_prob produced an empty token_id'
         assert token_id[0] == PROB_BOS and token_id[-1] == EOS, 'unexpected iGSM token layout'
         if op is not None:
             # gen_prob already rejection-samples to n_op == op_, but assert on every problem
-            # so the realized distribution is guaranteed to match the per-unit assignment.
+            # so the realized distribution is guaranteed to match the assigned op.
             assert gen.problem.n_op == op, (  # type: ignore[union-attr]
                 f'op pin failed: want {op}, got {gen.problem.n_op}'  # type: ignore[union-attr]
             )
@@ -171,9 +184,10 @@ def _unit_counts(num_problems: int, unit: int) -> list[int]:
 def _fine_unit(num_problems: int, workers: int) -> int:
     """Pick a fine chunk size targeting ~8 rebalancing units per worker (capped to 1..256).
 
-    8 units/worker is enough for the pool to smooth out heavy-tailed stragglers without paying
-    excessive per-unit overhead (each unit spins up its own ``IdGen``). The 256 cap keeps even
-    very large batches finely grained (e.g. 20k problems -> ~79 units).
+    8 units/worker is enough for the pool to smooth out heavy-tailed ``gen_prob`` stragglers
+    (rejection sampling is ~22 retries/problem and heavy-tailed) without excessive per-unit
+    scheduling overhead. The 256 cap keeps even very large batches finely grained (e.g. 20k
+    problems -> ~79 units).
     """
     if num_problems <= 0:
         return 1
@@ -235,7 +249,8 @@ def generate_problems(
     Each unit ``j`` is seeded ``seed + j`` (iGSM uses module-level RNG state, so distinct
     process-level seeds are required to avoid duplicate problems). Work is split into many
     fine units (see :func:`_fine_unit`) so the pool rebalances heavy-tailed stragglers; with
-    ``workers <= 1`` generation runs inline in a single ``IdGen``.
+    ``workers <= 1`` generation runs inline (no pool; one ``IdGen`` per problem, see
+    :func:`_generate_chunk`).
 
     When ``op`` is set, every problem is pinned to that exact reasoning-step count (see
     :func:`_generate_chunk`). For a multi-op distribution use :func:`generate_to_dir`
@@ -281,11 +296,12 @@ def _generate_batch_in_pool(
     duplicate-free across batches.
 
     When ``op_spec`` is given, each unit is pinned to one op count via round-robin over the
-    GLOBAL unit index ``(unit_start_index + j) % len(op_list)``. One ``IdGen`` emits a single
-    op count (``op_`` is sampled once in ``__init__``), so the per-unit granularity is the
-    natural place to assign op, and round-robin makes the chosen distribution balanced
-    (e.g. ``op_range 11-15`` -> ~equal problems per op). The caller passes
-    ``unit_start_index = batch_index * stride`` so the index is stable on resume.
+    GLOBAL unit index ``(unit_start_index + j) % len(op_list)``; every problem in that unit
+    then receives that pinned op (see :func:`_generate_chunk`), and round-robin makes the
+    chosen distribution balanced (e.g. ``op_range 11-15`` -> ~equal problems per op). When
+    ``op_spec`` is None, op is drawn independently per problem (natural ``min(U, U)``), so no
+    per-unit assignment is needed. The caller passes ``unit_start_index = batch_index *
+    stride`` so the round-robin index is stable on resume.
     """
     if num_problems <= 0:
         return []
@@ -523,6 +539,8 @@ def generate_to_dir(
                 pbar.update(batch_count)
                 continue
             streams = gen(batch_count, seed + b * stride, b * stride)
+            # Mix so that uniform op-spec is NOT chunked into same problem difficulties
+            random.Random(seed + b).shuffle(streams)
             if pack:
                 rows = pack_sequences(streams, context_length=context_length)
             else:

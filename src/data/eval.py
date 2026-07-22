@@ -88,7 +88,7 @@ def _generate_slice(
         #  (1) IdGen samples `op_` exactly once in __init__ and gen_prob only accepts problems with
         #      n_op == op_, so one instance emits only a SINGLE op count. Re-instantiating per
         #      problem re-draws op_, reproducing the op<=N spread for op_le15 and the reask base
-        #      (training recovers this via many small units; see src/data/igsm.py).
+        #      (src/data/igsm.py now also re-instantiates IdGen per problem for the same reason).
         #  (2) re_ask overwrites gen.op_ with the re-asked op count, which can EXCEED max_op; if
         #      that leaked into the next gen_prob, its `while n_op != op_` loop could never
         #      terminate (n_op is capped at max_op) -> an infinite hang. Fresh = no leak.
