@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 def expected_data_split(
         min_op: int = 1,
-        max_op: int = 15,
+        max_op: int = 16,
         n_samples: int = 100_000,
         seed: int = 0,
     ) -> np.ndarray:
@@ -43,7 +43,7 @@ def plot_expected_data_distribution(
     plt.figure(figsize=(4.5, 3.5))
     plt.hist(
         expected_data,
-        bins=np.arange(expected_data.min(), expected_data.max() + 1) - 0.5,
+        bins=np.arange(expected_data.min(), expected_data.max() + 2) - 0.5,
         width=0.9,
         density=True)
     plt.title(title)
