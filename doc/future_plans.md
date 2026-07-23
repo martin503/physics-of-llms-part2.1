@@ -1,8 +1,9 @@
 
 | size | feature |
 |:----:|---------|
+| small | save full random model for probe to be more code independent? |
 | medium | DONE (highest priority) successfully train v-probe on dep(A, B) task |
-| small | generate continuations on probe prompts to justify need for training probes. |
+| small | generate regular continuations on probe prompts to justify need for training probes. |
 | small | DECIDED AGAINST for probe testing (see project_log 2026-07-18: probes are supervised classification, inspect is built for generation evals; custom `report-dep` covers sample inspection). Inspect still makes sense later for behavioral evals of the LM itself (iGSM answer accuracy). |
 | medium | DONE for dep(A, B): `test` + `report-dep` commands (interactive graph report, see probe_guide "Testing a trained probe"). Still open for nece. |
 | medium | retrain the dep random control: the run started 2026-07-18 19:05 predates the seeded random-init fix, so its `probe.pt` cannot be re-paired with its transformer for test-time evaluation (training-time val metrics remain valid). |
