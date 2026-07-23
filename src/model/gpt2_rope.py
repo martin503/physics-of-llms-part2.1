@@ -55,7 +55,7 @@ class RotaryEmbedding(nn.Module):
     ]:
         """Return ``(cos, sin)`` of shape ``(batch, 1, seq, dim)`` for the given positions."""
         freqs = torch.einsum('bi,j->bij', position_ids.float(), self.inv_freq)
-        emb = einops.repeat(freqs, 'b s d -> b s (r d)', r=2)
+        emb = einops.repeat(freqs, 'batch seq dim -> batch seq (r dim)', r=2) # copy values 2 times along dim
         cos = emb.cos()[:, None, :, :]
         sin = emb.sin()[:, None, :, :]
         return cos, sin
@@ -150,7 +150,7 @@ class GPT2AttentionWithRoPE(GPT2Attention):
             value_states = value_states.view(shape_kv).transpose(1, 2)
 
         shape_q = (*query_states.shape[:-1], -1, self.head_dim)
-        query_states = query_states.view(shape_q).transpose(1, 2)
+        query_states = query_states.view(shape_q).transpose(1, 2) # batch ? seq dim
 
         # ----- RoPE insertion (self-attention only, before KV-cache update) -----
         # Applied to query/key after the head reshape and before the cache update so that
@@ -159,8 +159,8 @@ class GPT2AttentionWithRoPE(GPT2Attention):
             seq_len_q = query_states.shape[-2]
             pos = position_ids[:, -seq_len_q:]  # (batch, seq_q) absolute positions
             cos, sin = self.rotary_emb(pos)
-            cos = cos.to(query_states.dtype)
-            sin = sin.to(query_states.dtype)
+            cos = cos.to(query_states.dtype) # typecast
+            sin = sin.to(query_states.dtype) # typecast
             query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
         # -----------------------------------------------------------------------
 
@@ -229,6 +229,29 @@ class GPT2LMHeadModelWithRoPE(GPT2LMHeadModel):
         super().__init__(config)
         self.transformer = GPT2ModelWithRoPE(config)
         self.post_init()
+
+
+def verify_rope_buffers(model: GPT2LMHeadModelWithRoPE) -> None:
+    """Assert every ``inv_freq`` buffer matches the RoPE formula; raise on corruption.
+
+    Guards the ``from_pretrained`` meta-device pitfall (see ``RotaryEmbedding.__init__``):
+    a checkpoint saved *before* ``inv_freq`` became persistent has no such keys, so loading
+    it leaves the buffers as uninitialized memory ("missing keys" only warns). Measured
+    impact of that silent corruption on the old local checkpoint: teacher-forced next-token
+    accuracy 55.6% vs 87.5%. Call this after every ``from_pretrained``.
+    """
+    base = getattr(model.config, 'rope_theta', 10000.0)
+    for name, module in model.named_modules():
+        if isinstance(module, RotaryEmbedding):
+            dim = module.inv_freq.shape[0] * 2
+            expected = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+            if not torch.allclose(module.inv_freq.cpu().float(), expected):
+                raise ValueError(
+                    f'{name}.inv_freq does not match the RoPE formula (base={base}) -- the '
+                    'checkpoint predates the persistent inv_freq fix and loaded uninitialized '
+                    'buffers. Re-save the checkpoint with inv_freq in place, or use one that '
+                    'stores it (e.g. the HF gpt2-igsm-med model).'
+                )
 
 
 def build_gpt2_config(

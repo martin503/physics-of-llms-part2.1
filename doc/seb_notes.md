@@ -41,6 +41,9 @@ most of this has to be written from scratch as the original code is not availabl
 # Expected Learning Outcomes
 * Implement linear probes as simple mech. interp. technique that requires low-level modification of the model architecture.  
   ➜ solidify understanding of components, gain confidence that I can do this type of modification
-* 
 * Evaluate depth vs. width experiments for transformers on reasoning tasks.
   ➜ better understanding of hyperparameters and thus challenges and trends in LLM research
+
+## TODO
+Q: Is the model actually trained on problem statement tokens? Do those get gradient updates?
+Possibly only trained on solution tokens?

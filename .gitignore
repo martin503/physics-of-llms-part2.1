@@ -227,3 +227,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local results
+/final_models
+/results
+/trained_probes
+# Personal working log — kept local
+/doc/project_log.md

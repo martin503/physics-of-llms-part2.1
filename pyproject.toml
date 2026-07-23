@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = "==3.12.*"
 authors = [
     { name = "Marcin", email = "m6rcin53@gmail.com" },
-    { name = "Sebastian", email = "idk" }
+    { name = "Sebastian", email = "bastivonjost@gmail.com" }
 ]
 dependencies = [
     "accelerate>=1.14.0",
@@ -28,7 +28,8 @@ dependencies = [
     "psutil>=7.2.2",
     "inspect-ai>=0.3.241",
     "trl>=1.7.0",
-    "liger-kernel>=0.8.0",
+    # "liger-kernel>=0.8.0", # doesn't work on Windoes
+    "scikit-learn>=1.9.0",
 ]
 
 [dependency-groups]
@@ -40,6 +41,16 @@ dev = [
 ]
 flash = [
     "flash-attn==2.8.3",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
 ]
 
 [tool.uv.extra-build-dependencies]
@@ -69,6 +80,8 @@ ignore = []
 # jaxtyping shape strings (e.g. 'batch heads seq dim') are not valid Python and trip F722.
 "src/model/*.py" = ["F722"]
 "src/eval/*.py" = ["F722"]
+# the embedded HTML/CSS/JS report template has lines that don't wrap like Python does
+"src/probe/report_dep.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

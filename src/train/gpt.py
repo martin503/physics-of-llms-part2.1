@@ -47,19 +47,24 @@ from src.model.gpt2_rope import (
 
 
 class PackedDataset(TorchDataset):
-    """Thin ``torch.Dataset`` view over a pre-gen HF dataset's ``input_ids`` column."""
+    """Map-style view over a pre-generated HF dataset's ``input_ids`` column.
+
+    Indexes the arrow table one row at a time to avoid materializing the whole column as a
+    Python list-of-lists, which would cost ~5x the arrow footprint and be duplicated per DDP
+    rank. All windows share one length (enforced at write time, re-checked by the collator),
+    so reading row 0 is enough to learn it.
+    """
 
     def __init__(self, hf_dataset: Any) -> None:
-        self.input_ids: list[list[int]] = hf_dataset['input_ids']
-        assert self.input_ids, 'dataset is empty'
-        self.length = len(self.input_ids[0])
-        assert all(len(row) == self.length for row in self.input_ids), 'non-uniform window lengths'
+        self.ds = hf_dataset
+        assert len(self.ds) > 0, 'dataset is empty'
+        self.length = len(self.ds[0]['input_ids'])
 
     def __len__(self) -> int:
-        return len(self.input_ids)
+        return len(self.ds)
 
     def __getitem__(self, idx: int) -> dict[str, list[int]]:
-        return {'input_ids': self.input_ids[idx]}
+        return {'input_ids': self.ds[idx]['input_ids']}
 
 
 def make_collator(context_length: int):
@@ -109,29 +114,33 @@ def build_streaming_dataset(
 
 
 class LogSampleCallback(TrainerCallback):
-    """Periodically decode+log one packed window to W&B for sanity inspection."""
+    """
+    Periodically decode and log one packed window to W&B for sanity inspection.
 
-    def __init__(self, tokenizer: GPT2TokenizerFast, every: int = 500) -> None:
+    Iterates the dataset object (not the training dataloader) and caches the first window it
+    yields, so logging never consumes a training batch. Works for both the map-style and
+    streaming datasets.
+    """
+
+    def __init__(self, tokenizer: GPT2TokenizerFast, dataset: Any, every: int = 500) -> None:
         self.tokenizer = tokenizer
+        self.dataset = dataset
         self.every = every
-        self._sample: torch.Tensor | None = None
+        self._sample: list[int] | None = None
 
-    def on_step_end(self, args, state, control, train_dataloader=None, **kwargs) -> None:  # noqa: ARG002
+    def on_step_end(self, args, state, control, **kwargs) -> None:  # noqa: ARG002
         if not state.is_world_process_zero:
             return
         if state.global_step == 0 or state.global_step % self.every != 0:
             return
-        if self._sample is None and train_dataloader is not None:
+        if self._sample is None:  # fetch+cache one window on first log (rank 0 only)
             try:
-                self._sample = next(iter(train_dataloader))['input_ids']
-            except Exception:  # noqa: BLE001 -- degrade silently if a batch can't be pulled
-                self._sample = None
+                self._sample = next(iter(self.dataset))['input_ids']
+            except Exception:  # noqa: BLE001 -- degrade silently if a sample can't be pulled
                 return
-        if self._sample is None:
-            return
         import wandb
 
-        text = self.tokenizer.decode(self._sample[0], skip_special_tokens=False)
+        text = self.tokenizer.decode(self._sample, skip_special_tokens=False)
         wandb.log(
             {'train/sample_text': wandb.Html(f'<pre>{text[:2000]}</pre>')},
             step=state.global_step,
@@ -240,6 +249,25 @@ def train(
         float, typer.Option('--max-grad-norm', help='Max gradient norm (0 = unlimited).')
     ] = 1.0,
     attn_implementation: Annotated[str, typer.Option('--attn-implementation')] = 'sdpa',
+    torch_compile: Annotated[
+        bool,
+        typer.Option('--torch-compile', help='torch.compile the model (inductor) for speed.'),
+    ] = False,
+    resume_from_checkpoint: Annotated[
+        Path | None,
+        typer.Option(
+            '--resume-from-checkpoint',
+            help='Path to a checkpoint-N dir to resume from (restores model/optimizer/step).',
+        ),
+    ] = None,
+    resume: Annotated[
+        bool,
+        typer.Option(
+            '--resume',
+            help='Auto-resume from the latest checkpoint in --output-dir (ignored if '
+            '--resume-from-checkpoint is given).',
+        ),
+    ] = False,
     report_to: Annotated[list[str] | None, typer.Option('--report-to')] = None,
     seed: Annotated[int, typer.Option('--seed')] = 0,
     smoke: Annotated[
@@ -288,6 +316,7 @@ def train(
         max_eval_samples = 16  # don't iterate all val windows on CPU
         per_device_eval_batch_size = 2
         eval_steps = max_steps  # = 4 -> eval runs once during training, plus the final one
+        torch_compile = False  # enable quick test by avoiding compile
     else:
         config = build_gpt2_config(
             vocab_size=VOCAB_SIZE,
@@ -321,6 +350,8 @@ def train(
     )
     typer.echo(f'GPT-2 + RoPE ({tag}): {dims}')
 
+    # Collator needs the fixed window length. Map-style reads it off the data; the stream is
+    # lazy (no __len__), so trust --context-length (shards are packed to DEFAULT_CONTEXT_LENGTH).
     typer.echo(f'Loading packed dataset from {data_dir}...')
     if streaming:
         train_dataset, all_shards, rank_shards = build_streaming_dataset(
@@ -354,16 +385,13 @@ def train(
 
     callbacks: list[TrainerCallback] = []
     if 'wandb' in report_to and not smoke:
-        if streaming:
-            # LogSampleCallback re-iterates the train DataLoader for a sample, which is
-            # unsafe with a streaming IterableDataset -- so sample logging is disabled.
-            typer.echo('  (streaming: sample-text logging disabled)')
-        else:
-            try:
-                tokenizer = GPT2TokenizerFast.from_pretrained('gpt2')
-                callbacks.append(LogSampleCallback(tokenizer, every=max(500, logging_steps)))
-            except Exception as e:  # noqa: BLE001 -- tokenizer download may fail offline
-                typer.echo(f'  (skipping sample logging: {e})')
+        try:
+            tokenizer = GPT2TokenizerFast.from_pretrained('gpt2')
+            callbacks.append(
+                LogSampleCallback(tokenizer, train_dataset, every=max(500, logging_steps))
+            )
+        except Exception as e:  # noqa: BLE001 -- tokenizer download may fail offline
+            typer.echo(f'  (skipping sample logging: {e})')
 
     args = TrainingArguments(
         output_dir=str(output_dir),
@@ -380,7 +408,7 @@ def train(
         lr_scheduler_type=lr_scheduler_type,
         lr_scheduler_kwargs=sched_kwargs,
         bf16=bf16,
-        torch_compile=True,
+        torch_compile=torch_compile,
         gradient_checkpointing=gradient_checkpointing,
         logging_steps=logging_steps,
         logging_first_step=True,
@@ -395,6 +423,11 @@ def train(
         # Frozen unused wpe is invisible to DDP (requires_grad=False), so False is safe.
         ddp_find_unused_parameters=False,
         dataloader_num_workers=dataloader_num_workers,
+        dataloader_persistent_workers=streaming and dataloader_num_workers > 0,
+        # build_streaming_dataset already gives each rank a disjoint shard slice, so accelerate
+        # must NOT also dispatch from rank 0 -- that would read only rank 0's slice (1/N of the
+        # data). Pinning this off makes every rank iterate its own shards independently.
+        accelerator_config={'dispatch_batches': False},
         remove_unused_columns=False,
         seed=seed,
         use_cpu=smoke,
@@ -408,8 +441,17 @@ def train(
         data_collator=make_collator(window_length),
         callbacks=callbacks,
     )
+    # Resume: explicit checkpoint path wins; else --resume auto-finds the latest in output_dir.
+    resume_arg: str | bool | None = None
+    if resume_from_checkpoint is not None:
+        resume_arg = str(resume_from_checkpoint)
+        typer.echo(f'Resuming from {resume_arg}')
+    elif resume:
+        resume_arg = True
+        typer.echo(f'Resuming from latest checkpoint in {output_dir}')
+
     typer.echo('Starting training...')
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_arg)
     if eval_dataset is not None:
         final_metrics = trainer.evaluate()
         typer.echo(f'Final validation: loss={final_metrics["eval_loss"]:.4f}')
