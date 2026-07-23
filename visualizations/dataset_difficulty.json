@@ -1,0 +1,28 @@
+{
+  "data_dir": "I:/backup and file transfer/ai_safety/data/igsm_train_117M",
+  "n_shards_scanned": 894,
+  "n_shards_total": 894,
+  "workers": 12,
+  "n_problems": 117143968,
+  "n_windows": 51391477,
+  "op_problems": {
+    "1": 15335158,
+    "2": 13893411,
+    "3": 13500204,
+    "4": 12582737,
+    "5": 9961327,
+    "6": 11009910,
+    "7": 8257420,
+    "8": 7864227,
+    "9": 6389691,
+    "10": 6553524,
+    "11": 3932119,
+    "12": 3669980,
+    "13": 2621414,
+    "14": 1572846
+  },
+  "distinct_ops_per_window": {
+    "1": 51383887
+  },
+  "single_op_window_fraction": 1.0
+}
