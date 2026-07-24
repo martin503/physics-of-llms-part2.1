@@ -33,5 +33,5 @@ uv run accelerate launch --num_processes 3 --mixed_precision bf16 \
     --max-steps 100_000 --logging-steps 1_000 --save-steps 10_000 \
     --eval-data-dir data/igsm_val --eval-steps 1000 --max-eval-samples 2000 \
     --gradient-accumulation-steps 11 --torch-compile --streaming \
-    --data-dir ../../../../../tmp/josebast_igsm_data/data/igsm_train_117M \
+    --data-dir ../../../../../tmp/josebast_igsm_data/data/igsm_train_120M \
     $RESUME_FLAG

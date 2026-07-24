@@ -21,4 +21,4 @@ uv run accelerate launch --num_processes 1 --mixed_precision bf16 \
     --max-steps 20 --warmup-steps 20 \
     --gradient-accumulation-steps 2 --no-eval \
     --output-dir models/smoke \
-    --data-dir ../../../../../tmp/josebast_igsm_data/data/igsm_train_117M
+    --data-dir ../../../../../tmp/josebast_igsm_data/data/igsm_train_120M
