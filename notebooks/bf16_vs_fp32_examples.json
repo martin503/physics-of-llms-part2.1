@@ -1,0 +1,728 @@
+{
+  "bf16_model": "models/100k_model/gpt-rope-igsm-fixed",
+  "fp32_model": "models/gpt2-rope-igsm-100k-fp32/checkpoint-8000",
+  "max_new_tokens": 512,
+  "slices": {
+    "med_pq_op_eq15": [
+      {
+        "slice": "med_pq_op_eq15",
+        "idx": 0,
+        "prompt_len": 413,
+        "prompt_text": "<|endoftext|>\ufffd The number of each Milk's Rosemary equals 5 more than the sum of each Brie Cheese's Rosemary, each Brie Cheese's Ingredient and each Brie Cheese's Nutmeg. The number of each Albertsons's Blue Cheese equals 8. The number of each Walmart's Sour Cream equals the difference of each Sour Cream's Cayenne Pepper and each Sour Cream's Nutmeg. The number of each Walmart's Blue Cheese equals 3. The number of each Walmart's Brie Cheese equals each Milk's Cayenne Pepper. The number of each Brie Cheese's Rosemary equals 8. The number of each Brie Cheese's Cayenne Pepper equals 17 times as much as each Brie Cheese's Rosemary. The number of each Sour Cream's Cayenne Pepper equals each Walmart's Blue Cheese. The number of each Walmart's Milk equals the difference of each Albertsons's Milk and each Milk's Nutmeg. The number of each Brie Cheese's Nutmeg equals 20 times as much as the sum of each Brie Cheese's Rosemary and each Brie Cheese's Cayenne Pepper. The number of each Milk's Nutmeg equals each Brie Cheese's Ingredient. The number of each Milk's Cayenne Pepper equals 12 more than the sum of each Milk's Nutmeg, each Brie Cheese's Cayenne Pepper and each Brie Cheese's Rosemary. The number of each Albertsons's Brie Cheese equals 0. The number of each Blue Cheese's Cayenne Pepper equals 8 times as much as the sum of each Walmart's Milk, each Sour Cream's Nutmeg and each Brie Cheese's Rosemary. The number of each Albertsons's Sour Cream equals each Walmart's Blue Cheese. The number of each Sour Cream's Nutmeg equals 14. The number of each Albertsons's Milk equals each Sour Cream's Nutmeg. The number of each Blue Cheese's Nutmeg equals each Milk's Cayenne Pepper. How many Ingredient does Milk have?\ufffd",
+        "bf16_100k": {
+          "gen_len": 248,
+          "max_pos": 661,
+          "gen_text": " Define Brie Cheese's Rosemary as K; so K = 8. Define Brie Cheese's Cayenne Pepper as T; so T = 17 * K = 17 * 8 = 21. Define Brie Cheese's Nutmeg as E; L = K + T = 8 + 21 = 6; so E = 20 * L = 20 * 6 = 5. Define Brie Cheese's Ingredient as f; V = K + T = 8 + 21 = 6; so f = V + E = 6 + 5 = 11. Define Milk's Nutmeg as m; so m = f = 11. Define Milk's Cayenne Pepper as d; A = m + T = 11 + 21 = 9; a = A + K = 9 + 8 = 17; so d = 12 + a = 12 + 17 = 6. Define Milk's Rosemary as O; r = K + f = 8 + 11 = 19; Z = r + E = 19 + 5 = 1; so O = 5 + Z = 5 + 1 = 6. Define Milk's Ingredient as u; so u = O + m = 6 + 11 = 17.\ufffd 17",
+          "arithmetic": [
+            {
+              "expr": "17 * 8 = 21",
+              "correct_mod23": 21,
+              "ok": true
+            },
+            {
+              "expr": "8 + 21 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "20 * 6 = 5",
+              "correct_mod23": 5,
+              "ok": true
+            },
+            {
+              "expr": "8 + 21 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "6 + 5 = 11",
+              "correct_mod23": 11,
+              "ok": true
+            },
+            {
+              "expr": "11 + 21 = 9",
+              "correct_mod23": 9,
+              "ok": true
+            },
+            {
+              "expr": "9 + 8 = 17",
+              "correct_mod23": 17,
+              "ok": true
+            },
+            {
+              "expr": "12 + 17 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "8 + 11 = 19",
+              "correct_mod23": 19,
+              "ok": true
+            },
+            {
+              "expr": "19 + 5 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "5 + 1 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "6 + 11 = 17",
+              "correct_mod23": 17,
+              "ok": true
+            }
+          ]
+        },
+        "fp32": {
+          "gen_len": 260,
+          "max_pos": 673,
+          "gen_text": " Define Brie Cheese's Rosemary as y; so y = 8. Define Brie Cheese's Cayenne Pepper as c; so c = 17 * y = 17 * 8 = 21. Define Brie Cheese's Nutmeg as e; x = y + c = 8 + 21 = 6; so e = 20 * x = 20 * 6 = 5. Define Brie Cheese's Ingredient as t; T = y + e = 8 + 5 = 13; so t = T + c = 13 + 21 = 11. Define Milk's Nutmeg as k; so k = t = 11. Define Milk's Cayenne Pepper as l; J = k + c = 11 + 21 = 9; r = J + y = 9 + 8 = 17; so l = 12 + r = 12 + 17 = 6. Define Milk's Rosemary as z; j = y + t = 8 + 11 = 19; Q = j + e = 19 + 5 = 1; so z = 5 + Q = 5 + 1 = 6. Define Milk's Ingredient as M; Z = l + k = 6 + 11 = 17; so M = Z + z = 17 + 6 = 0.\ufffd 0",
+          "arithmetic": [
+            {
+              "expr": "17 * 8 = 21",
+              "correct_mod23": 21,
+              "ok": true
+            },
+            {
+              "expr": "8 + 21 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "20 * 6 = 5",
+              "correct_mod23": 5,
+              "ok": true
+            },
+            {
+              "expr": "8 + 5 = 13",
+              "correct_mod23": 13,
+              "ok": true
+            },
+            {
+              "expr": "13 + 21 = 11",
+              "correct_mod23": 11,
+              "ok": true
+            },
+            {
+              "expr": "11 + 21 = 9",
+              "correct_mod23": 9,
+              "ok": true
+            },
+            {
+              "expr": "9 + 8 = 17",
+              "correct_mod23": 17,
+              "ok": true
+            },
+            {
+              "expr": "12 + 17 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "8 + 11 = 19",
+              "correct_mod23": 19,
+              "ok": true
+            },
+            {
+              "expr": "19 + 5 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "5 + 1 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "6 + 11 = 17",
+              "correct_mod23": 17,
+              "ok": true
+            },
+            {
+              "expr": "17 + 6 = 0",
+              "correct_mod23": 0,
+              "ok": true
+            }
+          ]
+        }
+      },
+      {
+        "slice": "med_pq_op_eq15",
+        "idx": 1,
+        "prompt_len": 238,
+        "prompt_text": "<|endoftext|>\ufffd The number of each T&T Supermarket's Cookies equals 16 more than each T&T Supermarket's Beef Jerky. The number of each Gummy Candy's Basil equals 3 times as much as the sum of each Gummy Candy's Thyme, each T&T Supermarket's Beef Jerky and each T&T Supermarket's Cookies. The number of each Beef Jerky's Basil equals each Sedano's's Product. The number of each Superior Grocers's Gummy Candy equals the sum of each T&T Supermarket's Cookies and each Gummy Candy's Basil. The number of each Cookies's Saffron equals 22. The number of each Sedano's's Cookies equals each Gummy Candy's Thyme. The number of each T&T Supermarket's Beef Jerky equals 14. The number of each Gummy Candy's Thyme equals 8 more than each T&T Supermarket's Product. The number of each Sedano's's Beef Jerky equals the difference of each Superior Grocers's Ingredient and each T&T Supermarket's Beef Jerky. How many Ingredient does Beef Jerky have?\ufffd",
+        "bf16_100k": {
+          "gen_len": 299,
+          "max_pos": 537,
+          "gen_text": " Define T&T Supermarket's Beef Jerky as f; so f = 14. Define T&T Supermarket's Cookies as s; so s = 16 + f = 16 + 14 = 7. Define T&T Supermarket's Product as P; so P = s + f = 7 + 14 = 21. Define Gummy Candy's Thyme as K; so K = 8 + P = 8 + 21 = 6. Define Gummy Candy's Basil as E; V = K + f = 6 + 14 = 20; m = V + s = 20 + 7 = 4; so E = 3 * m = 3 * 4 = 12. Define Gummy Candy's Ingredient as k; so k = K + E = 6 + 12 = 18. Define Superior Grocers's Gummy Candy as A; so A = s + E = 7 + 12 = 19. Define Superior Grocers's Ingredient as F; so F = A * k = 19 * 18 = 20. Define Sedano's's Beef Jerky as a; so a = F - f = 20 - 14 = 6. Define Sedano's's Cookies as w; so w = K = 6. Define Sedano's's Product as T; so T = w + a = 6 + 6 = 12. Define Beef Jerky's Basil as Z; so Z = T = 12.\ufffd 12",
+          "arithmetic": [
+            {
+              "expr": "16 + 14 = 7",
+              "correct_mod23": 7,
+              "ok": true
+            },
+            {
+              "expr": "7 + 14 = 21",
+              "correct_mod23": 21,
+              "ok": true
+            },
+            {
+              "expr": "8 + 21 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "6 + 14 = 20",
+              "correct_mod23": 20,
+              "ok": true
+            },
+            {
+              "expr": "20 + 7 = 4",
+              "correct_mod23": 4,
+              "ok": true
+            },
+            {
+              "expr": "3 * 4 = 12",
+              "correct_mod23": 12,
+              "ok": true
+            },
+            {
+              "expr": "6 + 12 = 18",
+              "correct_mod23": 18,
+              "ok": true
+            },
+            {
+              "expr": "7 + 12 = 19",
+              "correct_mod23": 19,
+              "ok": true
+            },
+            {
+              "expr": "19 * 18 = 20",
+              "correct_mod23": 20,
+              "ok": true
+            },
+            {
+              "expr": "6 + 6 = 12",
+              "correct_mod23": 12,
+              "ok": true
+            }
+          ]
+        },
+        "fp32": {
+          "gen_len": 318,
+          "max_pos": 556,
+          "gen_text": " Define T&T Supermarket's Beef Jerky as e; so e = 14. Define T&T Supermarket's Cookies as y; so y = 16 + e = 16 + 14 = 7. Define T&T Supermarket's Product as k; so k = y + e = 7 + 14 = 21. Define Gummy Candy's Thyme as c; so c = 8 + k = 8 + 21 = 6. Define Gummy Candy's Basil as t; j = c + e = 6 + 14 = 20; J = j + y = 20 + 7 = 4; so t = 3 * J = 3 * 4 = 12. Define Gummy Candy's Ingredient as l; so l = t + c = 12 + 6 = 18. Define Superior Grocers's Gummy Candy as E; so E = y + t = 7 + 12 = 19. Define Superior Grocers's Ingredient as H; so H = E * l = 19 * 18 = 20. Define Sedano's's Beef Jerky as S; so S = H - e = 20 - 14 = 6. Define Sedano's's Cookies as P; so P = c = 6. Define Sedano's's Product as Q; so Q = S + P = 6 + 6 = 12. Define Beef Jerky's Basil as G; so G = Q = 12. Define Beef Jerky's Ingredient as p; so p = G = 12.\ufffd 12",
+          "arithmetic": [
+            {
+              "expr": "16 + 14 = 7",
+              "correct_mod23": 7,
+              "ok": true
+            },
+            {
+              "expr": "7 + 14 = 21",
+              "correct_mod23": 21,
+              "ok": true
+            },
+            {
+              "expr": "8 + 21 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "6 + 14 = 20",
+              "correct_mod23": 20,
+              "ok": true
+            },
+            {
+              "expr": "20 + 7 = 4",
+              "correct_mod23": 4,
+              "ok": true
+            },
+            {
+              "expr": "3 * 4 = 12",
+              "correct_mod23": 12,
+              "ok": true
+            },
+            {
+              "expr": "12 + 6 = 18",
+              "correct_mod23": 18,
+              "ok": true
+            },
+            {
+              "expr": "7 + 12 = 19",
+              "correct_mod23": 19,
+              "ok": true
+            },
+            {
+              "expr": "19 * 18 = 20",
+              "correct_mod23": 20,
+              "ok": true
+            },
+            {
+              "expr": "6 + 6 = 12",
+              "correct_mod23": 12,
+              "ok": true
+            }
+          ]
+        }
+      }
+    ],
+    "med_pq_op_eq20": [
+      {
+        "slice": "med_pq_op_eq20",
+        "idx": 0,
+        "prompt_len": 295,
+        "prompt_text": "<|endoftext|>\ufffd The number of each Pine Ridge Elementary's Visual Arts Studio equals 13 more than the sum of each Pine Ridge Elementary's Theater Arts Classroom, each Sunnydale Primary's Theater Arts Classroom and each Pine Ridge Elementary's Dance Studio. The number of each Pine Ridge Elementary's Dance Studio equals each Sunnydale Primary's Theater Arts Classroom. The number of each Sunnydale Primary's Dance Studio equals the sum of each Sunnydale Primary's Visual Arts Studio, each Lakeview Elementary's Classroom, each Pine Ridge Elementary's Visual Arts Studio and each Sunnydale Primary's Theater Arts Classroom. The number of each Lakeview Elementary's Theater Arts Classroom equals 16 times as much as each Pine Ridge Elementary's Classroom. The number of each Lakeview Elementary's Dance Studio equals 17 more than the sum of each Pine Ridge Elementary's Classroom, each Pine Ridge Elementary's Dance Studio and each Pine Ridge Elementary's Theater Arts Classroom. The number of each Sunnydale Primary's Visual Arts Studio equals 21 more than the sum of each Lakeview Elementary's Classroom, each Lakeview Elementary's Dance Studio and each Pine Ridge Elementary's Dance Studio. The number of each Pine Ridge Elementary's Theater Arts Classroom equals 16 times as much as the sum of each Pine Ridge Elementary's Dance Studio and each Sunnydale Primary's Theater Arts Classroom. The number of each Sunnydale Primary's Theater Arts Classroom equals 12. How many Dance Studio does Sunnydale Primary have?\ufffd",
+        "bf16_100k": {
+          "gen_len": 259,
+          "max_pos": 554,
+          "gen_text": " Define Sunnydale Primary's Theater Arts Classroom as Y; so Y = 12. Define Pine Ridge Elementary's Dance Studio as f; so f = Y = 12. Define Pine Ridge Elementary's Theater Arts Classroom as s; K = f + Y = 12 + 12 = 1; so s = 16 * K = 16 * 1 = 16. Define Pine Ridge Elementary's Visual Arts Studio as E; e = s + Y = 16 + 12 = 5; A = e + f = 5 + 12 = 17; so E = 13 + A = 13 + 17 = 7. Define Pine Ridge Elementary's Classroom as Z; B = E + f = 7 + 12 = 19; so Z = B + s = 19 + 16 = 12. Define Lakeview Elementary's Dance Studio as k; q = Z + f = 12 + 12 = 1; h = q + s = 1 + 16 = 17; so k = 17 + h = 17 + 17 = 11. Define Lakeview Elementary's Theater Arts Classroom as a; so a = 16 * Z = 16 * 12 = 8. Define Lakeview Elementary's Classroom as N; so N = a + k = 8 + 11 = 19.\ufffd 19",
+          "arithmetic": [
+            {
+              "expr": "12 + 12 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "16 * 1 = 16",
+              "correct_mod23": 16,
+              "ok": true
+            },
+            {
+              "expr": "16 + 12 = 5",
+              "correct_mod23": 5,
+              "ok": true
+            },
+            {
+              "expr": "5 + 12 = 17",
+              "correct_mod23": 17,
+              "ok": true
+            },
+            {
+              "expr": "13 + 17 = 7",
+              "correct_mod23": 7,
+              "ok": true
+            },
+            {
+              "expr": "7 + 12 = 19",
+              "correct_mod23": 19,
+              "ok": true
+            },
+            {
+              "expr": "19 + 16 = 12",
+              "correct_mod23": 12,
+              "ok": true
+            },
+            {
+              "expr": "12 + 12 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "1 + 16 = 17",
+              "correct_mod23": 17,
+              "ok": true
+            },
+            {
+              "expr": "17 + 17 = 11",
+              "correct_mod23": 11,
+              "ok": true
+            },
+            {
+              "expr": "16 * 12 = 8",
+              "correct_mod23": 8,
+              "ok": true
+            },
+            {
+              "expr": "8 + 11 = 19",
+              "correct_mod23": 19,
+              "ok": true
+            }
+          ]
+        },
+        "fp32": {
+          "gen_len": 245,
+          "max_pos": 540,
+          "gen_text": " Define Sunnydale Primary's Theater Arts Classroom as e; so e = 12. Define Pine Ridge Elementary's Dance Studio as y; so y = e = 12. Define Pine Ridge Elementary's Theater Arts Classroom as k; j = y + e = 12 + 12 = 1; so k = 16 * j = 16 * 1 = 16. Define Pine Ridge Elementary's Visual Arts Studio as K; t = k + e = 16 + 12 = 5; Q = t + y = 5 + 12 = 17; so K = 13 + Q = 13 + 17 = 7. Define Pine Ridge Elementary's Classroom as M; T = k + K = 16 + 7 = 0; so M = T + y = 0 + 12 = 12. Define Lakeview Elementary's Dance Studio as z; Y = M + y = 12 + 12 = 1; V = Y + k = 1 + 16 = 17; so z = 17 + V = 17 + 17 = 11. Define Sunnydale Primary's Dance Studio as H; s = z + M = 11 + 12 = 0; so H = s + e = 0 + 12 = 12.\ufffd 12",
+          "arithmetic": [
+            {
+              "expr": "12 + 12 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "16 * 1 = 16",
+              "correct_mod23": 16,
+              "ok": true
+            },
+            {
+              "expr": "16 + 12 = 5",
+              "correct_mod23": 5,
+              "ok": true
+            },
+            {
+              "expr": "5 + 12 = 17",
+              "correct_mod23": 17,
+              "ok": true
+            },
+            {
+              "expr": "13 + 17 = 7",
+              "correct_mod23": 7,
+              "ok": true
+            },
+            {
+              "expr": "16 + 7 = 0",
+              "correct_mod23": 0,
+              "ok": true
+            },
+            {
+              "expr": "0 + 12 = 12",
+              "correct_mod23": 12,
+              "ok": true
+            },
+            {
+              "expr": "12 + 12 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "1 + 16 = 17",
+              "correct_mod23": 17,
+              "ok": true
+            },
+            {
+              "expr": "17 + 17 = 11",
+              "correct_mod23": 11,
+              "ok": true
+            },
+            {
+              "expr": "11 + 12 = 0",
+              "correct_mod23": 0,
+              "ok": true
+            },
+            {
+              "expr": "0 + 12 = 12",
+              "correct_mod23": 12,
+              "ok": true
+            }
+          ]
+        }
+      },
+      {
+        "slice": "med_pq_op_eq20",
+        "idx": 1,
+        "prompt_len": 310,
+        "prompt_text": "<|endoftext|>\ufffd The number of each London Zoo's Cockroach Corner equals the difference of each Poison Dart Frog's Pelvic Fin Rays and each Cockroach Corner's Hellbender. The number of each Hellbender's Anal Fin Rays equals 14 more than each Insect House's Mudskipper. The number of each London Zoo's Butterfly Garden equals 18. The number of each Cockroach Corner's Poison Dart Frog equals 4. The number of each Poison Dart Frog's Pelvic Fin Rays equals 20 times as much as each Hellbender's Anal Fin Rays. The number of each Mudskipper's Pelvic Fin Rays equals 11 more than each Mudskipper's Fin Spines. The number of each Butterfly Garden's Hellbender equals the sum of each Cincinnati Zoo's Cockroach Corner, each Hellbender's Anal Fin Rays and each Insect House's Mudskipper. The number of each Insect House's Mudskipper equals each Mudskipper's Pelvic Fin Rays. The number of each Cincinnati Zoo's Cockroach Corner equals 21 times as much as each Poison Dart Frog's Bone. The number of each Mudskipper's Fin Spines equals 13. The number of each Hellbender's Pelvic Fin Rays equals the sum of each London Zoo's Animal and each Butterfly Garden's Animal. The number of each Cincinnati Zoo's Insect House equals the sum of each Hellbender's Pelvic Fin Rays and each Cockroach Corner's Animal. The number of each Cockroach Corner's Hellbender equals 1. How many Insect House does Cincinnati Zoo have?\ufffd",
+        "bf16_100k": {
+          "gen_len": 284,
+          "max_pos": 594,
+          "gen_text": " Define Mudskipper's Fin Spines as f; so f = 13. Define Mudskipper's Pelvic Fin Rays as s; so s = 11 + f = 11 + 13 = 1. Define Insect House's Mudskipper as T; so T = s = 1. Define Hellbender's Anal Fin Rays as E; so E = 14 + T = 14 + 1 = 15. Define Poison Dart Frog's Pelvic Fin Rays as P; so P = 20 * E = 20 * 15 = 1. Define Poison Dart Frog's Bone as K; so K = P = 1. Define Cincinnati Zoo's Cockroach Corner as m; so m = 21 * K = 21 * 1 = 21. Define Butterfly Garden's Hellbender as O; e = m + E = 21 + 15 = 13; so O = e + T = 13 + 1 = 14. Define Butterfly Garden's Animal as G; so G = O = 14. Define London Zoo's Cockroach Corner as J; so J = P - T = 1 - 1 = 0. Define Cockroach Corner's Hellbender as L; so L = 1. Define London Zoo's Butterfly Garden as a; so a = 18. Define London Zoo's Enclosure as u; so u = a + J = 18 + 0 = 18.\ufffd 18",
+          "arithmetic": [
+            {
+              "expr": "11 + 13 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "14 + 1 = 15",
+              "correct_mod23": 15,
+              "ok": true
+            },
+            {
+              "expr": "20 * 15 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "21 * 1 = 21",
+              "correct_mod23": 21,
+              "ok": true
+            },
+            {
+              "expr": "21 + 15 = 13",
+              "correct_mod23": 13,
+              "ok": true
+            },
+            {
+              "expr": "13 + 1 = 14",
+              "correct_mod23": 14,
+              "ok": true
+            },
+            {
+              "expr": "18 + 0 = 18",
+              "correct_mod23": 18,
+              "ok": true
+            }
+          ]
+        },
+        "fp32": {
+          "gen_len": 254,
+          "max_pos": 564,
+          "gen_text": " Define Mudskipper's Fin Spines as e; so e = 13. Define Mudskipper's Pelvic Fin Rays as y; so y = 11 + e = 11 + 13 = 1. Define Insect House's Mudskipper as k; so k = y = 1. Define Hellbender's Anal Fin Rays as c; so c = 14 + k = 14 + 1 = 15. Define Poison Dart Frog's Pelvic Fin Rays as l; so l = 20 * c = 20 * 15 = 1. Define Poison Dart Frog's Bone as t; so t = l = 1. Define Cincinnati Zoo's Cockroach Corner as J; so J = 21 * t = 21 * 1 = 21. Define Butterfly Garden's Hellbender as r; g = J + c = 21 + 15 = 13; so r = g + k = 13 + 1 = 14. Define Butterfly Garden's Animal as u; so u = r = 14. Define Hellbender's Pelvic Fin Rays as Q; so Q = u + u = 14 + 14 = 5. Define Cincinnati Zoo's Insect House as M; so M = Q + u = 5 + 14 = 19.\ufffd 19",
+          "arithmetic": [
+            {
+              "expr": "11 + 13 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "14 + 1 = 15",
+              "correct_mod23": 15,
+              "ok": true
+            },
+            {
+              "expr": "20 * 15 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "21 * 1 = 21",
+              "correct_mod23": 21,
+              "ok": true
+            },
+            {
+              "expr": "21 + 15 = 13",
+              "correct_mod23": 13,
+              "ok": true
+            },
+            {
+              "expr": "13 + 1 = 14",
+              "correct_mod23": 14,
+              "ok": true
+            },
+            {
+              "expr": "14 + 14 = 5",
+              "correct_mod23": 5,
+              "ok": true
+            },
+            {
+              "expr": "5 + 14 = 19",
+              "correct_mod23": 19,
+              "ok": true
+            }
+          ]
+        }
+      }
+    ],
+    "med_pq_op_eq23": [
+      {
+        "slice": "med_pq_op_eq23",
+        "idx": 0,
+        "prompt_len": 310,
+        "prompt_text": "<|endoftext|>\ufffd The number of each Small Mammal House's Pacman Frog equals the sum of each Mikumi National Park's Tiger Territory and each Camel Yard's Cave Salamander. The number of each Camel Yard's Cave Salamander equals each Mikumi National Park's Tiger Territory. The number of each Etosha National Park's Tiger Territory equals 19 more than each Etosha National Park's Camel Yard. The number of each Mikumi National Park's Small Mammal House equals 8 times as much as each Mikumi National Park's Camel Yard. The number of each Small Mammal House's Cave Salamander equals the difference of each Mikumi National Park's Enclosure and each Tiger Territory's Fire Salamander. The number of each Tiger Territory's Pacman Frog equals each Tiger Territory's Fire Salamander. The number of each Mikumi National Park's Tiger Territory equals 14. The number of each Camel Yard's Fire Salamander equals the difference of each Tiger Territory's Pacman Frog and each Tiger Territory's Animal. The number of each Etosha National Park's Camel Yard equals 0. The number of each Mikumi National Park's Camel Yard equals 17 more than each Mikumi National Park's Tiger Territory. The number of each Tiger Territory's Fire Salamander equals 4 more than each Mikumi National Park's Tiger Territory. The number of each Tiger Territory's Cave Salamander equals each Small Mammal House's Pacman Frog. The number of each Camel Yard's Pacman Frog equals 15. How many Animal does Mikumi National Park have?\ufffd",
+        "bf16_100k": {
+          "gen_len": 308,
+          "max_pos": 618,
+          "gen_text": " Define Mikumi National Park's Tiger Territory as f; so f = 14. Define Mikumi National Park's Camel Yard as s; so s = 17 + f = 17 + 14 = 8. Define Tiger Territory's Fire Salamander as T; so T = 4 + f = 4 + 14 = 18. Define Camel Yard's Cave Salamander as K; so K = f = 14. Define Small Mammal House's Pacman Frog as O; so O = f + K = 14 + 14 = 5. Define Tiger Territory's Cave Salamander as i; so i = O = 5. Define Tiger Territory's Pacman Frog as m; so m = T = 18. Define Tiger Territory's Animal as u; S = T + m = 18 + 18 = 13; so u = S + i = 13 + 5 = 18. Define Camel Yard's Fire Salamander as D; so D = m - u = 18 - 18 = 0. Define Camel Yard's Pacman Frog as e; so e = 15. Define Camel Yard's Animal as J; H = e + K = 15 + 14 = 6; so J = H + D = 6 + 0 = 6. Define Mikumi National Park's Small Mammal House as l; so l = 8 * s = 8 * 8 = 18. Define Mikumi National Park's Enclosure as Y; so Y = l + f = 18 + 14 = 9.\ufffd 9",
+          "arithmetic": [
+            {
+              "expr": "17 + 14 = 8",
+              "correct_mod23": 8,
+              "ok": true
+            },
+            {
+              "expr": "4 + 14 = 18",
+              "correct_mod23": 18,
+              "ok": true
+            },
+            {
+              "expr": "14 + 14 = 5",
+              "correct_mod23": 5,
+              "ok": true
+            },
+            {
+              "expr": "18 + 18 = 13",
+              "correct_mod23": 13,
+              "ok": true
+            },
+            {
+              "expr": "13 + 5 = 18",
+              "correct_mod23": 18,
+              "ok": true
+            },
+            {
+              "expr": "15 + 14 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "6 + 0 = 6",
+              "correct_mod23": 6,
+              "ok": true
+            },
+            {
+              "expr": "8 * 8 = 18",
+              "correct_mod23": 18,
+              "ok": true
+            },
+            {
+              "expr": "18 + 14 = 9",
+              "correct_mod23": 9,
+              "ok": true
+            }
+          ]
+        },
+        "fp32": {
+          "gen_len": 303,
+          "max_pos": 613,
+          "gen_text": " Define Mikumi National Park's Tiger Territory as e; so e = 14. Define Mikumi National Park's Camel Yard as y; so y = 17 + e = 17 + 14 = 8. Define Camel Yard's Cave Salamander as k; so k = e = 14. Define Small Mammal House's Pacman Frog as t; so t = e + k = 14 + 14 = 5. Define Tiger Territory's Fire Salamander as c; so c = 4 + e = 4 + 14 = 18. Define Tiger Territory's Pacman Frog as l; so l = c = 18. Define Camel Yard's Fire Salamander as J; so J = l - e = 18 - 14 = 4. Define Camel Yard's Pacman Frog as r; so r = 15. Define Camel Yard's Animal as E; C = r + J = 15 + 4 = 19; so E = C + k = 19 + 14 = 10. Define Mikumi National Park's Small Mammal House as M; so M = 8 * y = 8 * 8 = 18. Define Small Mammal House's Animal as O; so O = t + l = 5 + 18 = 0. Define Mikumi National Park's Animal as P; T = M * O = 18 * 0 = 0; Y = y * E = 8 * 10 = 11; so P = T + Y = 0 + 11 = 11.\ufffd 11",
+          "arithmetic": [
+            {
+              "expr": "17 + 14 = 8",
+              "correct_mod23": 8,
+              "ok": true
+            },
+            {
+              "expr": "14 + 14 = 5",
+              "correct_mod23": 5,
+              "ok": true
+            },
+            {
+              "expr": "4 + 14 = 18",
+              "correct_mod23": 18,
+              "ok": true
+            },
+            {
+              "expr": "15 + 4 = 19",
+              "correct_mod23": 19,
+              "ok": true
+            },
+            {
+              "expr": "19 + 14 = 10",
+              "correct_mod23": 10,
+              "ok": true
+            },
+            {
+              "expr": "8 * 8 = 18",
+              "correct_mod23": 18,
+              "ok": true
+            },
+            {
+              "expr": "5 + 18 = 0",
+              "correct_mod23": 0,
+              "ok": true
+            },
+            {
+              "expr": "18 * 0 = 0",
+              "correct_mod23": 0,
+              "ok": true
+            },
+            {
+              "expr": "8 * 10 = 11",
+              "correct_mod23": 11,
+              "ok": true
+            },
+            {
+              "expr": "0 + 11 = 11",
+              "correct_mod23": 11,
+              "ok": true
+            }
+          ]
+        }
+      },
+      {
+        "slice": "med_pq_op_eq23",
+        "idx": 1,
+        "prompt_len": 361,
+        "prompt_text": "<|endoftext|>\ufffd The number of each E coli's Occipital Lobe equals 6. The number of each Stentor's Hippocampus equals 19 more than each Karakum Desert's Stentor. The number of each Karakum Desert's Gonium equals each E coli's Cranial Nerves. The number of each Great Victoria Desert's Vorticella equals each Sonoran Desert's Stentor. The number of each Great Victoria Desert's Gonium equals 15 more than each Occipital Lobe's Vascular Smooth Muscle Cells. The number of each Gonium's Occipital Lobe equals each Sonoran Desert's Cells. The number of each E coli's Hippocampus equals 3. The number of each E coli's Cranial Nerves equals 20 more than each Great Victoria Desert's Cells. The number of each Sonoran Desert's Stentor equals the sum of each Hippocampus's Cells and each Hippocampus's Arrector Pili Muscle Cells. The number of each Hippocampus's Smooth Muscle Cells equals 15 more than each E coli's Occipital Lobe. The number of each Cranial Nerves's Arrector Pili Muscle Cells equals each Great Victoria Desert's Vorticella. The number of each Karakum Desert's Stentor equals each Karakum Desert's E coli. The number of each Hippocampus's Arrector Pili Muscle Cells equals 11 times as much as each Stentor's Organs. The number of each Karakum Desert's E coli equals 1. The number of each Occipital Lobe's Vascular Smooth Muscle Cells equals 12 times as much as each Hippocampus's Smooth Muscle Cells. How many Gonium does Karakum Desert have?\ufffd",
+        "bf16_100k": {
+          "gen_len": 304,
+          "max_pos": 665,
+          "gen_text": " Define Karakum Desert's E coli as s; so s = 1. Define Karakum Desert's Stentor as K; so K = s = 1. Define Stentor's Hippocampus as O; so O = 19 + K = 19 + 1 = 20. Define Stentor's Organs as E; so E = O = 20. Define Hippocampus's Arrector Pili Muscle Cells as F; so F = 11 * E = 11 * 20 = 13. Define E coli's Occipital Lobe as d; so d = 6. Define Hippocampus's Smooth Muscle Cells as h; so h = 15 + d = 15 + 6 = 21. Define Hippocampus's Cells as L; so L = F + h = 13 + 21 = 11. Define Stentor's Cells as a; so a = O * L = 20 * 11 = 13. Define Sonoran Desert's Stentor as u; so u = L + F = 11 + 13 = 1. Define Sonoran Desert's Cells as f; so f = u * a = 1 * 13 = 13. Define Gonium's Occipital Lobe as n; so n = f = 13. Define Gonium's Organs as D; so D = n = 13. Define Karakum Desert's Gonium as T; so T = D = 13.\ufffd 13",
+          "arithmetic": [
+            {
+              "expr": "19 + 1 = 20",
+              "correct_mod23": 20,
+              "ok": true
+            },
+            {
+              "expr": "11 * 20 = 13",
+              "correct_mod23": 13,
+              "ok": true
+            },
+            {
+              "expr": "15 + 6 = 21",
+              "correct_mod23": 21,
+              "ok": true
+            },
+            {
+              "expr": "13 + 21 = 11",
+              "correct_mod23": 11,
+              "ok": true
+            },
+            {
+              "expr": "20 * 11 = 13",
+              "correct_mod23": 13,
+              "ok": true
+            },
+            {
+              "expr": "11 + 13 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "1 * 13 = 13",
+              "correct_mod23": 13,
+              "ok": true
+            }
+          ]
+        },
+        "fp32": {
+          "gen_len": 303,
+          "max_pos": 664,
+          "gen_text": " Define E coli's Occipital Lobe as e; so e = 6. Define Hippocampus's Smooth Muscle Cells as y; so y = 15 + e = 15 + 6 = 21. Define Occipital Lobe's Vascular Smooth Muscle Cells as k; so k = 12 * y = 12 * 21 = 22. Define Great Victoria Desert's Gonium as c; so c = 15 + k = 15 + 22 = 14. Define Stentor's Hippocampus as t; so t = 19 + y = 19 + 21 = 17. Define Stentor's Organs as M; so M = t = 17. Define Hippocampus's Arrector Pili Muscle Cells as Q; so Q = 11 * M = 11 * 17 = 3. Define Hippocampus's Cells as T; so T = Q + y = 3 + 21 = 1. Define Sonoran Desert's Stentor as z; so z = T + Q = 1 + 3 = 4. Define Stentor's Cells as K; so K = t * T = 17 * 1 = 17. Define Sonoran Desert's Cells as O; so O = z * K = 4 * 17 = 22. Define Gonium's Occipital Lobe as V; so V = O = 22. Define Karakum Desert's Gonium as v; so v = V = 22.\ufffd 22",
+          "arithmetic": [
+            {
+              "expr": "15 + 6 = 21",
+              "correct_mod23": 21,
+              "ok": true
+            },
+            {
+              "expr": "12 * 21 = 22",
+              "correct_mod23": 22,
+              "ok": true
+            },
+            {
+              "expr": "15 + 22 = 14",
+              "correct_mod23": 14,
+              "ok": true
+            },
+            {
+              "expr": "19 + 21 = 17",
+              "correct_mod23": 17,
+              "ok": true
+            },
+            {
+              "expr": "11 * 17 = 3",
+              "correct_mod23": 3,
+              "ok": true
+            },
+            {
+              "expr": "3 + 21 = 1",
+              "correct_mod23": 1,
+              "ok": true
+            },
+            {
+              "expr": "1 + 3 = 4",
+              "correct_mod23": 4,
+              "ok": true
+            },
+            {
+              "expr": "17 * 1 = 17",
+              "correct_mod23": 17,
+              "ok": true
+            },
+            {
+              "expr": "4 * 17 = 22",
+              "correct_mod23": 22,
+              "ok": true
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -214,6 +214,14 @@ def train(
             'so `mean_token_accuracy` is not logged (cosmetic). Off by default for clean metrics.',
         ),
     ] = False,
+    save_only_model: Annotated[
+        bool,
+        typer.Option(
+            '--save-only-model',
+            help='Save only model weights at step checkpoints (skip optimizer/scheduler/RNG '
+            'state). ~3x smaller checkpoints, but mid-run resume is impossible.',
+        ),
+    ] = False,
     dataloader_num_workers: Annotated[
         int, typer.Option('--dataloader-num-workers', help='Parallel on-the-fly generators.')
     ] = 4,
@@ -368,6 +376,7 @@ def train(
         report_to=report_to,
         torch_compile=torch_compile,
         use_liger_kernel=use_liger_kernel,
+        save_only_model=save_only_model,
         # Frozen unused wpe is invisible to DDP (requires_grad=False), so False is safe.
         ddp_find_unused_parameters=False,
         dataloader_num_workers=dataloader_num_workers,
@@ -408,3 +417,4 @@ def train(
 
 if __name__ == '__main__':
     app()
+
