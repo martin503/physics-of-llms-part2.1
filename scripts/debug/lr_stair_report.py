@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 RES = REPO / "sweeps" / "lr_stair_results.json"
 data = json.loads(RES.read_text())
 

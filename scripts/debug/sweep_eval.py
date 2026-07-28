@@ -3,7 +3,7 @@
 
 Generalized form: ``run_eval(targets, slices, results_path, ...)`` drives everything;
 the module-level TARGETS/SLICES/RESULTS below are just the defaults for the original
-6-run sweep (so ``python scripts/sweep_eval.py`` still works unchanged).
+6-run sweep (so ``python scripts/debug/sweep_eval.py`` still works unchanged).
 
 Resumable: keeps non-error results in ``results_path`` and re-evals the rest.
 Concurrency: 2 evals at a time, ONE per GPU via a GPU-pool semaphore (avoids the
@@ -23,7 +23,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 RESULTS = REPO / "sweeps" / "results.json"
 SLICES = ["med_pq_op_le15", "med_pq_op_eq15", "med_pq_op_eq20"]
 LR = {"gbs256_lr4e4": 4e-4, "gbs256_lr8e4": 8e-4, "gbs256_lr1e3": 1e-3,

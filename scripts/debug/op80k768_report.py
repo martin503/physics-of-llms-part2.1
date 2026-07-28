@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 RES = REPO / (sys.argv[1] if len(sys.argv) > 1 else 'sweeps/op80k768_results.json')
 data = json.loads(RES.read_text())
 

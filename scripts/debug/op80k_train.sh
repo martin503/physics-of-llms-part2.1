@@ -9,7 +9,7 @@
 # 90k (~6.94e-5); we never anneal below where the 100k model would be over the 80k->90k
 # segment we're effectively replaying. With peak 2e-4 that floor is min_lr_rate=0.35.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 : "${WANDB_ENTITY:=m6rcin53-marcin-mazur}"
 : "${WANDB_PROJECT:=physics_of_llms}"
 DATA=${DATA:-data/igsm_raw_30M_eq1_15_packed2048}

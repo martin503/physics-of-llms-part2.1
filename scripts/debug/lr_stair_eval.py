@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sweep_eval import run_eval
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 TOK = 49152  # gbs64 per-step tokens (64 * 768)
 RUNS = [
     ("8e6", 8e-6, "sweeps/disc_gbs64_lr8e6"),

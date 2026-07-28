@@ -15,7 +15,7 @@
 #   - full 10k, save every 500 (brackets the eq20 transient, which at 393k tok/step lands in
 #     steps ~300-1300, gone by ~2700).
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 : "${WANDB_ENTITY:=m6rcin53-marcin-mazur}"
 : "${WANDB_PROJECT:=physics_of_llms}"
 DATA=${DATA:-data/igsm_raw_30M_eq1_15_packed768}

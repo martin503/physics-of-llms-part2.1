@@ -3,7 +3,7 @@
 # Find the floor where eq15 stops saturating (and le15 stays ~0.99).
 # Args: [max_steps=200] [save_steps=50]
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 : "${WANDB_ENTITY:=m6rcin53-marcin-mazur}"
 : "${WANDB_PROJECT:=physics_of_llms}"
 DATA=data/igsm_raw_10M_eq11_15_packed768

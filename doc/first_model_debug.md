@@ -41,7 +41,7 @@ schedule), eq15 climbs from **0.32 → ~1.0 in ~50–100 steps (≈ 2.5–5 M to
 le15 is best at the *earliest* checkpoint and only erodes with more training — so "overfitting" here
 just means training too long at too-high an LR; early-stop at saturation. **eq20 stays 0.0 at every
 checkpoint** (the data is op ≤ 15) — that is a separate ceiling, investigated in §2. Drivers:
-`scripts/lr_stair_{train,eval,report}.{sh,py}`.
+`scripts/debug/lr_stair_{train,eval,report}.{sh,py}`.
 
 ---
 
@@ -147,7 +147,7 @@ was **transient**:
 | step 2000 | 0.992 | 1.000 | 0.000 |
 
 eq20 = 0.119 at step 1000 (confirmed 61/512), then **crashes to 0 by step 2000** as the model over-fits
-op ≤ 15 (eq15 0.984 → 1.0 *while* eq20 0.12 → 0). Drivers: `scripts/op80k_{train,eval,report}.{sh,py}`.
+op ≤ 15 (eq15 0.984 → 1.0 *while* eq20 0.12 → 0). Drivers: `scripts/debug/op80k_{train,eval,report}.{sh,py}`.
 The crash is an **over-fitting artifact of too-high LR**, not a
 wall — which §3.2 exploits.
 
@@ -187,12 +187,12 @@ le15 ≈ 0.98 and eq15 ≈ 0.97. op > 15 data is still likely needed to push tow
 
 ## Reproducibility
 
-- **eq15 fine-tune (§1):** `scripts/lr_stair_{train,eval,report}.{sh,py}`.
-- **eq20 fix (§3):** `scripts/op80k768_train.sh` with
+- **eq15 fine-tune (§1):** `scripts/debug/lr_stair_{train,eval,report}.{sh,py}`.
+- **eq20 fix (§3):** `scripts/debug/op80k768_train.sh` with
   `LR=5e-5 MAX_STEPS=2000 SAVE_STEPS=100 MIN_LR_RATE=1e-5 OUT=disc_80k_op1_15_lr2e4_gbs512_ctx768_fa2_1k_2`
   (dir name says `lr2e4` but the run is lr5e-5). ~3 s/step at gbs512/ctx768/fa2 → ~1.7 h for 2k.
-- **Training / eval scripts:** `scripts/` — `lr_stair_{train,eval,report}.{sh,py}` (§1 eq15),
+- **Training / eval scripts:** `scripts/debug/` — `lr_stair_{train,eval,report}.{sh,py}` (§1 eq15),
   `op80k_{train,eval,report}.{sh,py}` (§3.1 plasticity), `op80k768_train.sh` (§3.2 lr5e-5); the eval
-  scripts share `scripts/sweep_eval.py` (`run_eval`, 2-GPU pool, resumable).
+  scripts share `scripts/debug/sweep_eval.py` (`run_eval`, 2-GPU pool, resumable).
 - **Diagnosis notebooks (§2):** `notebooks/{eq20_failure_analysis,eval_loss_floor_irreducible,bf16_vs_fp32_reasoning}.ipynb`.
   checkpoint — included for the technique, not as a finding about our model.
