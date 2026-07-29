@@ -8,6 +8,9 @@ test: ## Run tests
 fast-test: ## Run tests that are not slow
 	uv run pytest -m "not slow"
 
+test-slow: ## Run only slow tests
+	uv run pytest -m "slow"
+
 pre-commit: ## Install pre commit hooks
 	uv run pre-commit install
 	uv run pre-commit install-hooks

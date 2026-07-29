@@ -51,6 +51,33 @@ plain array/list logic and two of them encode correctness guarantees the code le
 | `test_classification_metrics_*` | Confusion cells counted into the right buckets; MCC ±1 on perfect/inverted; single-class labels don't crash | A swapped cell silently mislabelling every edge colour in the dep report |
 | `test_predict_vprobe_restores_input_order` | `preds[i]` belongs to `rows[i]` despite internal length-sorted batching (checked with a stub probe whose output is a deterministic function of each row) | A mis-scatter assigning predictions to the wrong (A, B) pairs — invisible in aggregate metrics, fatal for the graph report |
 
+### `test_pack.py` — the packing functions (`src/data/pack.py` + `pack_sequences`)
+
+Pure list/parquet helpers with no iGSM dependency:
+
+| Test(s) | Guarantees | Catches |
+|---|---|---|
+| `test_pack_sequences_*` | Windows are exactly `context_length`; the partial tail is dropped; the prefix is preserved exactly; empty/zero-ctx handled | An off-by-one or non-uniform window silently breaking `PackedDataset`/the collator |
+| `test_pack_single_*` | One problem per window, EOS-prepended + EOS-padded; oversized problems dropped, not errored | The eval packing path emitting wrong-length windows |
+| `test_write_shards_*` / `test_load_streams_*` | Uniform-length invariant + `batch_NNNNNN` naming; column round-trips | A shard writer that accepts non-uniform rows |
+| `test_pack_cli_*` | `--mode packed`/`--mode single` both yield uniform windows; invalid mode rejected | A dispatch bug in the `pack` CLI |
+
+### `test_igsm.py` — iGSM generation, seeding, shard I/O, difficulty (`src/data/igsm.py`)
+
+A mix of fast pure-logic tests (run in `make fast-test`) and `slow` real-generation tests
+(`make test-slow`; need the iGSM submodule checked out):
+
+| Test(s) | Guarantees | Catches |
+|---|---|---|
+| `test_unit_counts_*` / `test_fine_unit_*` / `test_normalize_op_spec_*` | Unit splitting, ~8-units/worker target+caps, op-spec normalization & validation | Wrong work-splitting or op-spec parsing |
+| `test_shard_*` / `test_done_batches_*` / `test_count_shard_rows` | Atomic write round-trips; a `.partial` never counts as done; row counts via metadata | A resume that re-does work or trusts an incomplete shard |
+| `test_per_unit_seeds_globally_unique` | Every pool unit across all batches gets a unique seed (`seed + b*stride + j`) | Two workers sharing a seed → duplicate problems |
+| `test_generate_to_dir_*` | Batch seeds spaced by `stride`; written streams have no duplicates; resume regenerates nothing | A broken seed stride or a broken resume |
+| `test_recover_op_counts_synthetic` / `test_expected_min_pmf_sanity` | Difficulty recovery reads planted ops exactly; target pmf is valid & decreasing | A broken measurement instrument for the distribution tests |
+| `test_real_no_duplicates_and_deterministic` *(slow)* | Real multi-worker generation has no duplicate streams; reproducible; seed-sensitive | A seed collision producing duplicate problems |
+| `test_real_packed_windows_well_formed` *(slow)* | Real packed windows are exactly 768, in-vocab, and recoverable | End-to-end packing+write bugs on real data |
+| `test_distribution_forced_uniform_ops` / `test_distribution_natural_all_ops_present` *(slow)* | A couple of each op 1..15 appear (forced-uniform and natural) | The per-shard-op-lock regression collapsing difficulty to one op |
+
 ## Known gaps (intentional, integration-shaped)
 
 These have **no unit tests** because they need the frozen model and/or the iGSM submodule:
