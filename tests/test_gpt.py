@@ -1,10 +1,15 @@
 """Data-pipeline tests for ``src/train/gpt.py`` (streaming DDP path).
 
-Covers the two multi-GPU data properties of ``build_streaming_dataset``:
+Covers the multi-GPU data properties of ``build_streaming_dataset``:
 
-* (fast, in-process) each DDP rank takes a disjoint shard-file slice, and DataLoader
-  workers within a rank stream disjoint rows -- no duplication across ranks or workers.
+* (fast, in-process) the stream is handed every shard, DataLoader workers within a rank
+  stream disjoint rows, and -- driving accelerate's real ``prepare_data_loader`` -- the DDP
+  ranks together read every window exactly once.
 * (slow, 2-rank CPU DDP) over 100 optimizer steps no training batch is seen by both ranks.
+
+``test_b3`` guards the double-shard bug: ``build_streaming_dataset`` used to slice
+``files[rank::world]`` itself *and* accelerate sharded that again, so the ranks jointly
+trained on 1/world of the data while every disjointness invariant still held.
 
 A tiny fake packed-parquet dataset is produced once under ``data/_test_gpt/`` (already
 covered by ``/data`` in ``.gitignore``) and reused across runs unless its params change.
@@ -21,12 +26,13 @@ from pathlib import Path
 import pytest
 import torch
 import torch.multiprocessing as mp
+from accelerate.data_loader import prepare_data_loader
 from torch.utils.data import DataLoader
 from transformers import Trainer, TrainingArguments
 
 from src.data.igsm import VOCAB_SIZE, _shard_path, _write_shard_atomic
 from src.model.gpt2_rope import build_gpt2_config, build_gpt2_rope
-from src.train.gpt import build_streaming_dataset, make_collator
+from src.train.gpt import build_streaming_dataset, make_collator, stream_epochs_available
 
 # Window length the streaming collator asserts (gpt.py derives it from --context-length;
 # small here purely for test speed). Fake shards are packed to exactly this length.
@@ -65,37 +71,93 @@ def fake_data() -> Path:
     return d
 
 
-def test_b1_rank_files_disjoint(monkeypatch, fake_data):
-    """Each rank's ``files[rank::world]`` slice is disjoint and covers all shards."""
-    per_rank: list[set[Path]] = []
-    union: set[Path] = set()
-    for rank in (0, 1):
+def _identity_collate(batch):
+    """Keep raw parquet rows (plain Python lists) so a window's tokens stay comparable."""
+    return batch
+
+
+def test_b1_stream_is_not_pre_split(monkeypatch, fake_data):
+    """The dataset keeps every shard; the rank split is accelerate's job, done once.
+
+    ``n_shards`` is what accelerate's ``dataset.shard()`` divides, so a reintroduced
+    ``files[rank::world]`` pre-slice shows up here immediately.
+    """
+    for rank in (0, 1, 2):
         monkeypatch.setenv('RANK', str(rank))
-        monkeypatch.setenv('WORLD_SIZE', '2')
-        _, all_files, rank_files = build_streaming_dataset(fake_data, seed=0, shuffle_buffer=0)
-        rf = set(rank_files)
-        assert len(rf) >= 2, 'need >=2 files/rank to stay off the padding shard path'
-        per_rank.append(rf)
-        union |= rf
-    assert per_rank[0].isdisjoint(per_rank[1]), 'a shard file is assigned to BOTH ranks'
-    assert union == set(all_files), 'rank slices do not cover every shard (data loss)'
+        monkeypatch.setenv('WORLD_SIZE', '3')
+        ds, all_files = build_streaming_dataset(fake_data, seed=0, shuffle_buffer=0)
+        assert len(all_files) == N_SHARDS
+        assert ds.n_shards == N_SHARDS, (
+            f'rank {rank} sees {ds.n_shards}/{N_SHARDS} shards: the stream was pre-split by '
+            f'rank and accelerate will now split it a second time'
+        )
 
 
-def test_b2_workers_no_duplication(monkeypatch, fake_data):
+def test_b2_workers_no_duplication(fake_data):
     """DataLoader workers within a rank stream disjoint rows -- no row appears twice.
 
-    Workers gather the raw parquet rows (plain Python lists) with an identity collate, which is
-    all that's needed to exercise HF's per-worker file sharding (``IterableDataset._iter_pytorch``)
-    without pinning the test to any particular collation.
+    Workers gather the raw parquet rows with an identity collate, which is all that's needed
+    to exercise HF's per-worker file sharding (``IterableDataset._iter_pytorch``) without
+    pinning the test to any particular collation.
     """
-    monkeypatch.setenv('RANK', '0')
-    monkeypatch.setenv('WORLD_SIZE', '2')
-    ds, _, rank_files = build_streaming_dataset(fake_data, seed=0, shuffle_buffer=0)
-    dl = DataLoader(ds, batch_size=4, num_workers=4, collate_fn=lambda batch: batch)
+    ds, all_files = build_streaming_dataset(fake_data, seed=0, shuffle_buffer=0)
+    dl = DataLoader(ds, batch_size=4, num_workers=4, collate_fn=_identity_collate)
     seen = [tuple(row['input_ids']) for batch in dl for row in batch]
-    expected = len(rank_files) * WINDOWS_PER_SHARD  # 16 files * 64 windows = 1024 rows
+    expected = len(all_files) * WINDOWS_PER_SHARD  # 32 files * 64 windows = 2048 rows
     assert len(seen) == expected, f'expected {expected} rows, got {len(seen)} (loss/gain)'
     assert len(seen) == len(set(seen)), 'a row was streamed by more than one worker'
+
+
+def _rank_epoch_windows(data_dir: Path, world: int, rank: int) -> list[tuple[int, ...]]:
+    """Windows ``rank`` trains on in one epoch, through accelerate's real dataloader wrapping.
+
+    Passing ``num_processes``/``process_index`` explicitly needs no process group and no env
+    vars; ``dispatch_batches=False`` mirrors the ``accelerator_config`` that ``train()`` pins.
+    """
+    ds, _ = build_streaming_dataset(data_dir, seed=0, shuffle_buffer=0)
+    dl = DataLoader(ds, batch_size=2, num_workers=0, collate_fn=_identity_collate)
+    dl = prepare_data_loader(
+        dl,
+        num_processes=world,
+        process_index=rank,
+        put_on_device=False,
+        dispatch_batches=False,
+        split_batches=False,
+    )
+    return [tuple(row['input_ids']) for batch in dl for row in batch]
+
+
+def test_b3_ddp_ranks_cover_the_whole_dataset(fake_data):
+    """Three ranks together read every window exactly once (the double-shard regression).
+
+    Disjointness alone cannot catch double sharding -- 1/world**2 slices are disjoint too --
+    so this asserts *coverage*: the union over ranks must be the entire dataset.
+    """
+    world = 3
+    counts: list[int] = []
+    union: set[tuple[int, ...]] = set()
+    for rank in range(world):
+        windows = _rank_epoch_windows(fake_data, world, rank)
+        counts.append(len(windows))
+        union |= set(windows)
+    total = N_SHARDS * WINDOWS_PER_SHARD
+    assert sum(counts) == len(union), 'a window was streamed by two ranks'
+    assert len(union) == total, (
+        f'ranks jointly read {len(union)}/{total} windows ({len(union) / total:.1%}), '
+        f'per-rank {counts} -- the stream is being sharded twice'
+    )
+
+
+def test_b4_stream_epochs_available_flags_a_short_stream():
+    """The startup preflight: <1.0 epochs is exactly the condition that wraps train/epoch.
+
+    The two window counts are the real 3xA100 run: 52,918,515 windows on disk just covered
+    100k steps, but double sharding left only 17,641,065 reachable -- a third of an epoch,
+    hence the jumps to 1.0 and 2.0 in the W&B chart.
+    """
+    cfg = dict(world=3, per_device_batch=16, grad_accum=11, max_steps=100_000)
+    assert stream_epochs_available(52_918_515, **cfg) == pytest.approx(1.002, abs=1e-3)
+    assert stream_epochs_available(17_641_065, **cfg) == pytest.approx(1 / 3, abs=1e-3)
 
 
 class _RecordingTrainer(Trainer):
@@ -131,7 +193,7 @@ def _rank_fn(rank: int, world: int, data_dir: str, out_dir: str, port: int) -> N
         n_positions=CTX,
     )
     model = build_gpt2_rope(config, attn_implementation='sdpa')
-    ds, _, _ = build_streaming_dataset(Path(data_dir), seed=0, shuffle_buffer=0)
+    ds, _ = build_streaming_dataset(Path(data_dir), seed=0, shuffle_buffer=0)
     args = TrainingArguments(
         output_dir=out_dir,
         per_device_train_batch_size=2,

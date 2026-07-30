@@ -36,6 +36,7 @@ from src.data.igsm import (
     SHARD_PREFIX,
     SHARD_SUFFIX,
     VOCAB_SIZE,
+    _count_shard_rows,
     load_igsm_dataset,
 )
 from src.model.gpt2_rope import (
@@ -82,35 +83,45 @@ def make_collator(context_length: int):
 
 def build_streaming_dataset(
     data_dir: Path, *, seed: int, shuffle_buffer: int
-) -> tuple[Any, list[Path], list[Path]]:
+) -> tuple[Any, list[Path]]:
     """Stream packed parquet shards lazily as an HF ``IterableDataset``.
 
-    For train sets too large to fit in RAM. Shard files are split across DDP ranks
-    via ``WORLD_SIZE``/``RANK`` (set by ``accelerate launch`` / ``torchrun``), and the
-    ``datasets`` library sub-shards across DataLoader workers, so every (rank, worker)
-    pair streams a disjoint slice -- the streaming analogue of the map-style DDP shard
-    split, with no cross-rank duplication and no full-dataset load. Only the shuffle
-    buffer and in-flight batches are held in memory.
+    For train sets too large to fit in RAM. **Every** shard file goes into the dataset: the
+    DDP split happens exactly once, later, inside ``accelerate.prepare_data_loader``, which
+    calls ``IterableDataset.shard(num_shards=WORLD_SIZE, index=RANK)``; ``datasets`` then
+    sub-shards again across DataLoader workers. Slicing the file list by rank *here as well*
+    shards twice and leaves each rank 1/WORLD_SIZE**2 of the data -- disjoint across ranks,
+    so it looks correct.
 
-    Returns ``(dataset, all_shard_files, rank_shard_files)``.
+    Returns ``(dataset, all_shard_files)``.
     """
     from datasets import load_dataset
 
     files = sorted(data_dir.glob(f'{SHARD_PREFIX}*{SHARD_SUFFIX}'))
     if not files:
         raise FileNotFoundError(f'no {SHARD_PREFIX}*{SHARD_SUFFIX} shards at {data_dir}')
-    world = int(os.environ.get('WORLD_SIZE', '1'))
-    rank = int(os.environ.get('RANK', '0'))
-    rank_files = files[rank::world]
     ds = load_dataset(
         'parquet',
-        data_files={'train': [str(f) for f in rank_files]},
+        data_files={'train': [str(f) for f in files]},
         split='train',
         streaming=True,
     )
     if shuffle_buffer and shuffle_buffer > 0:
         ds = ds.shuffle(seed=seed, buffer_size=shuffle_buffer)
-    return ds, files, rank_files
+    return ds, files
+
+
+def stream_epochs_available(
+    n_windows: int, *, world: int, per_device_batch: int, grad_accum: int, max_steps: int
+) -> float:
+    """How many passes over ``n_windows`` a ``max_steps`` run makes at this batch size.
+
+    Below 1.0 the stream runs dry mid-run: each rank silently restarts its shards from the
+    top, so ``train/epoch`` jumps by a whole integer, the tail of the dataset is never read,
+    and the head is trained on repeatedly.
+    """
+    per_step = per_device_batch * grad_accum * world
+    return n_windows / (per_step * max_steps)
 
 
 class LogSampleCallback(TrainerCallback):
@@ -354,15 +365,26 @@ def train(
     # lazy (no __len__), so trust --context-length (shards are packed to DEFAULT_CONTEXT_LENGTH).
     typer.echo(f'Loading packed dataset from {data_dir}...')
     if streaming:
-        train_dataset, all_shards, rank_shards = build_streaming_dataset(
+        train_dataset, all_shards = build_streaming_dataset(
             data_dir, seed=seed, shuffle_buffer=shuffle_buffer
         )
         world = int(os.environ.get('WORLD_SIZE', '1'))
-        rank = int(os.environ.get('RANK', '0'))
         typer.echo(
-            f'  streaming {len(all_shards)} shards; rank {rank}/{world} -> '
-            f'{len(rank_shards)} shards; shuffle_buffer={shuffle_buffer or "off"}'
+            f'  streaming {len(all_shards)} shards, split across {world} rank(s) by '
+            f'accelerate; shuffle_buffer={shuffle_buffer or "off"}'
         )
+        if int(os.environ.get('RANK', '0')) == 0:  # footers only, but one open per shard
+            n_windows = _count_shard_rows(all_shards)
+            epochs = stream_epochs_available(
+                n_windows,
+                world=world,
+                per_device_batch=per_device_train_batch_size,
+                grad_accum=gradient_accumulation_steps,
+                max_steps=max_steps,
+            )
+            typer.echo(f'  {n_windows:,} windows = {epochs:.3f} epochs over {max_steps:,} steps')
+            if epochs < 1.0:
+                typer.echo('  !! stream runs dry mid-run: train/epoch jumps and windows repeat')
         window_length = context_length
     else:
         hf_dataset = load_igsm_dataset(data_dir)
@@ -424,9 +446,9 @@ def train(
         ddp_find_unused_parameters=False,
         dataloader_num_workers=dataloader_num_workers,
         dataloader_persistent_workers=streaming and dataloader_num_workers > 0,
-        # build_streaming_dataset already gives each rank a disjoint shard slice, so accelerate
-        # must NOT also dispatch from rank 0 -- that would read only rank 0's slice (1/N of the
-        # data). Pinning this off makes every rank iterate its own shards independently.
+        # Required for the streaming path: only with dispatch_batches off does accelerate
+        # split an IterableDataset by shard file (one disjoint slice per rank, streamed
+        # independently). Dispatching instead reads everything in rank 0 and scatters it.
         accelerator_config={'dispatch_batches': False},
         remove_unused_columns=False,
         seed=seed,
