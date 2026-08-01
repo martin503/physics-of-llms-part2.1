@@ -5,11 +5,13 @@ Covers the multi-GPU data properties of ``build_streaming_dataset``:
 * (fast, in-process) the stream is handed every shard, DataLoader workers within a rank
   stream disjoint rows, and -- driving accelerate's real ``prepare_data_loader`` -- the DDP
   ranks together read every window exactly once.
-* (slow, 2-rank CPU DDP) over 100 optimizer steps no training batch is seen by both ranks.
+* (slow, 2-rank CPU DDP) over 100 optimizer steps no training batch is seen by both ranks,
+  under both ``dispatch_batches`` settings.
 
-``test_b3`` guards the double-shard bug: ``build_streaming_dataset`` used to slice
-``files[rank::world]`` itself *and* accelerate sharded that again, so the ranks jointly
-trained on 1/world of the data while every disjointness invariant still held.
+``test_b3``/``test_b4`` guard the double-shard bug without and with dataloader workers;
+``test_b5`` pins the old behaviour that caused it. ``build_streaming_dataset``
+used to slice ``files[rank::world]`` itself *and* accelerate sharded that again, so the ranks
+jointly trained on 1/world of the data while every disjointness invariant still held.
 
 A tiny fake packed-parquet dataset is produced once under ``data/_test_gpt/`` (already
 covered by ``/data`` in ``.gitignore``) and reused across runs unless its params change.
@@ -30,7 +32,13 @@ from accelerate.data_loader import prepare_data_loader
 from torch.utils.data import DataLoader
 from transformers import Trainer, TrainingArguments
 
-from src.data.igsm import VOCAB_SIZE, _shard_path, _write_shard_atomic
+from src.data.igsm import (
+    SHARD_PREFIX,
+    SHARD_SUFFIX,
+    VOCAB_SIZE,
+    _shard_path,
+    _write_shard_atomic,
+)
 from src.model.gpt2_rope import build_gpt2_config, build_gpt2_rope
 from src.train.gpt import build_streaming_dataset, make_collator, stream_epochs_available
 
@@ -108,14 +116,16 @@ def test_b2_workers_no_duplication(fake_data):
     assert len(seen) == len(set(seen)), 'a row was streamed by more than one worker'
 
 
-def _rank_epoch_windows(data_dir: Path, world: int, rank: int) -> list[tuple[int, ...]]:
+def _rank_epoch_windows(
+    data_dir: Path, world: int, rank: int, *, num_workers: int = 0
+) -> list[tuple[int, ...]]:
     """Windows ``rank`` trains on in one epoch, through accelerate's real dataloader wrapping.
 
     Passing ``num_processes``/``process_index`` explicitly needs no process group and no env
     vars; ``dispatch_batches=False`` mirrors the ``accelerator_config`` that ``train()`` pins.
     """
     ds, _ = build_streaming_dataset(data_dir, seed=0, shuffle_buffer=0)
-    dl = DataLoader(ds, batch_size=2, num_workers=0, collate_fn=_identity_collate)
+    dl = DataLoader(ds, batch_size=2, num_workers=num_workers, collate_fn=_identity_collate)
     dl = prepare_data_loader(
         dl,
         num_processes=world,
@@ -148,7 +158,106 @@ def test_b3_ddp_ranks_cover_the_whole_dataset(fake_data):
     )
 
 
-def test_b4_stream_epochs_available_flags_a_short_stream():
+def _assert_partitions_dataset(per_rank: list[list[tuple[int, ...]]], label: str) -> None:
+    """Assert the per-rank streams are an exact partition of the dataset.
+
+    Both halves have to be asserted together: disjointness alone passes under double sharding
+    (1/world**2 slices are disjoint), coverage alone passes if a rank re-reads windows another
+    rank already has. Failures report the offending pair, the form a broken split takes.
+    """
+    world = len(per_rank)
+    total = N_SHARDS * WINDOWS_PER_SHARD
+    counts = [len(w) for w in per_rank]
+    for rank, windows in enumerate(per_rank):
+        assert windows, f'{label}: rank {rank} got no data at all'
+        dupes = len(windows) - len(set(windows))
+        assert not dupes, f'{label}: rank {rank} streamed {dupes} window(s) twice itself'
+    for a in range(world):
+        for b in range(a + 1, world):
+            shared = set(per_rank[a]) & set(per_rank[b])
+            assert not shared, (
+                f'{label}: ranks {a} and {b} share {len(shared)}/{counts[a]} window(s) -- the '
+                f'stream is being copied to ranks instead of split across them'
+            )
+    union: set[tuple[int, ...]] = set().union(*(set(w) for w in per_rank))
+    assert len(union) == total, (
+        f'{label}: ranks jointly read {len(union)}/{total} windows ({len(union) / total:.1%}), '
+        f'per-rank {counts} -- data is being dropped or the stream is sharded twice'
+    )
+
+
+@pytest.mark.parametrize('world', [2, 3], ids=['world2', 'world3'])
+def test_b4_ranks_partition_the_stream_with_dataloader_workers(fake_data, world):
+    """The train#3 fix in the configuration ``train.sbatch`` actually runs: an exact partition.
+
+    ``test_b3`` pins the minimal case: the rank split alone, ``num_workers=0``. Production
+    adds ``--dataloader-num-workers`` (default 4), so the shards are split *twice* -- across
+    ranks by accelerate, then again across workers inside each rank by ``datasets``. ``b2``
+    covers the worker split alone (single rank), ``b3`` the rank split alone (no workers);
+    neither covers the composition, and only the composition is what trains.
+
+    ``world=3`` is the sbatch config, where 32 shards do not divide evenly across ranks;
+    ``world=2`` divides cleanly, a different path in ``datasets``.
+    """
+    per_rank = [_rank_epoch_windows(fake_data, world, r, num_workers=4) for r in range(world)]
+    _assert_partitions_dataset(per_rank, f'{world} ranks x 4 workers')
+
+
+def _presplit_rank_epoch_windows(data_dir: Path, world: int, rank: int) -> list[tuple[int, ...]]:
+    """The qknorm ``build_streaming_dataset``: slice ``files[rank::world]`` *before* accelerate.
+
+    Reproduced inline (rather than imported) because the fix deleted it -- this keeps the old
+    behaviour pinned as a test fixture so the regression stays demonstrable.
+    """
+    from datasets import load_dataset
+
+    files = sorted(data_dir.glob(f'{SHARD_PREFIX}*{SHARD_SUFFIX}'))
+    ds = load_dataset(
+        'parquet',
+        data_files={'train': [str(f) for f in files[rank::world]]},
+        split='train',
+        streaming=True,
+    )
+    dl = DataLoader(ds, batch_size=2, num_workers=0, collate_fn=_identity_collate)
+    dl = prepare_data_loader(
+        dl,
+        num_processes=world,
+        process_index=rank,
+        put_on_device=False,
+        dispatch_batches=False,
+        split_batches=False,
+    )
+    return [tuple(row['input_ids']) for batch in dl for row in batch]
+
+
+def test_b5_presplit_shards_twice_and_loses_data(fake_data):
+    """Characterisation test for the bug: a manual pre-split leaves 1/world**2 per rank.
+
+    This is what qknorm did. Every disjointness invariant still holds -- which is exactly why
+    it went unnoticed -- but the ranks jointly reach only 1/world of the dataset, so the
+    stream runs dry ``world`` times early and ``train/epoch`` jumps by a whole integer.
+    """
+    world = 3
+    per_rank = [_presplit_rank_epoch_windows(fake_data, world, r) for r in range(world)]
+    total = N_SHARDS * WINDOWS_PER_SHARD
+    union: set[tuple[int, ...]] = set()
+    for windows in per_rank:
+        union |= set(windows)
+    # Bounds, not exact counts: N_SHARDS need not divide world**2, so the second split lands
+    # unevenly. The invariant that matters is "disjoint, yet far short of the whole dataset".
+    assert sum(len(w) for w in per_rank) == len(union), 'pre-split is still disjoint per rank'
+    assert len(union) <= total * 0.45, (
+        f'pre-split reached {len(union)}/{total} windows ({len(union) / total:.1%}); the '
+        f'double split should leave roughly 1/{world}'
+    )
+    for rank, windows in enumerate(per_rank):
+        assert len(windows) < total / world, (
+            f'rank {rank} reached {len(windows)} windows, more than the {total / world:.0f} a '
+            f'single correct split would give it -- the second split did not fire'
+        )
+
+
+def test_b6_stream_epochs_available_flags_a_short_stream():
     """The startup preflight: <1.0 epochs is exactly the condition that wraps train/epoch.
 
     The two window counts are the real 3xA100 run: 52,918,515 windows on disk just covered
@@ -173,7 +282,9 @@ class _RecordingTrainer(Trainer):
         return super().training_step(model, inputs, num_items_in_batch)
 
 
-def _rank_fn(rank: int, world: int, data_dir: str, out_dir: str, port: int) -> None:
+def _rank_fn(
+    rank: int, world: int, data_dir: str, out_dir: str, port: int, dispatch: bool
+) -> None:
     """One CPU DDP rank: stream its shards, train 100 steps, dump seen-batch fingerprints."""
     # Set BEFORE TrainingArguments so accelerate's PartialState() inits gloo from env.
     os.environ.update(
@@ -209,7 +320,7 @@ def _rank_fn(rank: int, world: int, data_dir: str, out_dir: str, port: int) -> N
         torch_compile=False,
         ddp_find_unused_parameters=False,
         dataloader_num_workers=0,
-        accelerator_config={'dispatch_batches': False},
+        accelerator_config={'dispatch_batches': dispatch},
         remove_unused_columns=False,
         use_cpu=True,
         seed=0,
@@ -228,15 +339,23 @@ def _rank_fn(rank: int, world: int, data_dir: str, out_dir: str, port: int) -> N
 
 
 @pytest.mark.slow
-def test_a_ddp_no_cross_rank_batch_overlap(tmp_path, fake_data):
-    """Over 100 DDP optimizer steps, no batch is seen by both ranks (nor repeated within one)."""
+@pytest.mark.parametrize('dispatch', [False, True], ids=['no_dispatch', 'dispatch'])
+def test_a_ddp_no_cross_rank_batch_overlap(tmp_path, fake_data, dispatch):
+    """Over 100 DDP optimizer steps, no batch is seen by both ranks (nor repeated within one).
+
+    Run under both ``dispatch_batches`` settings, since the two use entirely different data
+    paths: off, each rank streams its own shard files (``dataset.shard``); on, rank 0 reads
+    everything and scatters slices. Both must give every rank distinct batches -- what
+    changed between them on qknorm was not correctness but *which* split fired, and with a
+    manual pre-split in place only the off path double-shards. ``train()`` pins off.
+    """
     sock = socket.socket()
     sock.bind(('', 0))
     port = sock.getsockname()[1]
     sock.close()
     mp.spawn(
         _rank_fn,
-        args=(2, str(fake_data), str(tmp_path), port),
+        args=(2, str(fake_data), str(tmp_path), port, dispatch),
         nprocs=2,
         join=True,
     )
