@@ -350,7 +350,7 @@ def _shard_path(out: Path, batch_idx: int) -> Path:
     return out / f'{SHARD_PREFIX}{batch_idx:06d}{SHARD_SUFFIX}'
 
 
-def _write_shard_atomic(rows: list[list[int]], path: Path, require_uniform: bool = True) -> None:
+def _write_shard_atomic(rows: list[list[int]], path: Path, require_uniform_windows: bool = True) -> None:
     """Write ``rows`` to ``path`` as parquet via a temp file, then atomically rename.
 
     ``rows`` are either packed windows (uniform length, ``require_uniform=True``) or raw
@@ -359,7 +359,7 @@ def _write_shard_atomic(rows: list[list[int]], path: Path, require_uniform: bool
     correctly re-does the interrupted batch.
     """
     assert rows, 'cannot write an empty shard'
-    if require_uniform:
+    if require_uniform_windows:
         row_len = len(rows[0])
         assert all(len(r) == row_len for r in rows), 'non-uniform window lengths'
     tmp = path.with_name(f'.{path.name}.partial')
@@ -546,7 +546,7 @@ def generate_to_dir(
             else:
                 rows = streams  # raw problems (variable length); packed online at train time
             if rows:
-                _write_shard_atomic(rows, _shard_path(out, b), require_uniform=pack)
+                _write_shard_atomic(rows, _shard_path(out, b), require_uniform_windows=pack)
             pbar.update(batch_count)
     finally:
         pbar.close()

@@ -177,7 +177,7 @@ def test_shard_path(tmp_path):
 def test_shard_atomic_round_trip(tmp_path):
     rows = [[1, 2, 3], [4, 5, 6]]
     path = tmp_path / 'batch_000000.parquet'
-    _write_shard_atomic(rows, path, require_uniform=True)
+    _write_shard_atomic(rows, path, require_uniform_windows=True)
     assert path.is_file()
     assert not (tmp_path / '.batch_000000.parquet.partial').exists()  # temp cleaned up
     assert pq.read_table(path)['input_ids'].to_pylist() == rows
@@ -185,15 +185,15 @@ def test_shard_atomic_round_trip(tmp_path):
 
 def test_done_batches_ignores_partials(tmp_path):
     """Resume correctness: a leftover ``.partial`` (interrupted write) never counts as done."""
-    _write_shard_atomic([[1]], tmp_path / 'batch_000000.parquet', require_uniform=False)
-    _write_shard_atomic([[3]], tmp_path / 'batch_000002.parquet', require_uniform=False)
+    _write_shard_atomic([[1]], tmp_path / 'batch_000000.parquet', require_uniform_windows=False)
+    _write_shard_atomic([[3]], tmp_path / 'batch_000002.parquet', require_uniform_windows=False)
     (tmp_path / '.batch_000001.parquet.partial').write_bytes(b'')  # simulated interrupted write
     assert _done_batches(tmp_path, num_batches=3) == {0, 2}
 
 
 def test_count_shard_rows(tmp_path):
-    _write_shard_atomic([[1], [2], [3]], tmp_path / 'batch_000000.parquet', require_uniform=False)
-    _write_shard_atomic([[4], [5]], tmp_path / 'batch_000001.parquet', require_uniform=False)
+    _write_shard_atomic([[1], [2], [3]], tmp_path / 'batch_000000.parquet', require_uniform_windows=False)
+    _write_shard_atomic([[4], [5]], tmp_path / 'batch_000001.parquet', require_uniform_windows=False)
     shards = sorted(tmp_path.glob('batch_*.parquet'))
     assert _count_shard_rows(shards) == 5
 

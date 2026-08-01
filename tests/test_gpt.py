@@ -36,6 +36,7 @@ from src.data.igsm import (
     SHARD_PREFIX,
     SHARD_SUFFIX,
     VOCAB_SIZE,
+    _count_shard_rows,
     _shard_path,
     _write_shard_atomic,
 )
@@ -74,7 +75,7 @@ def fake_data() -> Path:
             [((s * WINDOWS_PER_SHARD + r) * CTX + t) % VOCAB_SIZE for t in range(CTX)]
             for r in range(WINDOWS_PER_SHARD)
         ]
-        _write_shard_atomic(rows, _shard_path(d, s), require_uniform=True)
+        _write_shard_atomic(rows, _shard_path(d, s), require_uniform_windows=True)
     meta.write_text(json.dumps(_META))
     return d
 
@@ -82,6 +83,16 @@ def fake_data() -> Path:
 def _identity_collate(batch):
     """Keep raw parquet rows (plain Python lists) so a window's tokens stay comparable."""
     return batch
+
+
+def _total_windows(data_dir: Path) -> int:
+    """Windows actually on disk, counted from parquet metadata.
+
+    Coverage assertions compare against this rather than ``N_SHARDS * WINDOWS_PER_SHARD`` so
+    they stay valid for a fixture whose shards are not all the same size (real iGSM shards
+    vary by a few hundred rows).
+    """
+    return _count_shard_rows(sorted(data_dir.glob(f'{SHARD_PREFIX}*{SHARD_SUFFIX}')))
 
 
 def test_b1_stream_is_not_pre_split(monkeypatch, fake_data):
@@ -111,7 +122,7 @@ def test_b2_workers_no_duplication(fake_data):
     ds, all_files = build_streaming_dataset(fake_data, seed=0, shuffle_buffer=0)
     dl = DataLoader(ds, batch_size=4, num_workers=4, collate_fn=_identity_collate)
     seen = [tuple(row['input_ids']) for batch in dl for row in batch]
-    expected = len(all_files) * WINDOWS_PER_SHARD  # 32 files * 64 windows = 2048 rows
+    expected = _count_shard_rows(all_files)  # 32 files * 64 windows = 2048 rows
     assert len(seen) == expected, f'expected {expected} rows, got {len(seen)} (loss/gain)'
     assert len(seen) == len(set(seen)), 'a row was streamed by more than one worker'
 
@@ -150,7 +161,7 @@ def test_b3_ddp_ranks_cover_the_whole_dataset(fake_data):
         windows = _rank_epoch_windows(fake_data, world, rank)
         counts.append(len(windows))
         union |= set(windows)
-    total = N_SHARDS * WINDOWS_PER_SHARD
+    total = _total_windows(fake_data)
     assert sum(counts) == len(union), 'a window was streamed by two ranks'
     assert len(union) == total, (
         f'ranks jointly read {len(union)}/{total} windows ({len(union) / total:.1%}), '
@@ -158,15 +169,17 @@ def test_b3_ddp_ranks_cover_the_whole_dataset(fake_data):
     )
 
 
-def _assert_partitions_dataset(per_rank: list[list[tuple[int, ...]]], label: str) -> None:
+def _assert_partitions_dataset(
+    per_rank: list[list[tuple[int, ...]]], label: str, *, total: int
+) -> None:
     """Assert the per-rank streams are an exact partition of the dataset.
+    i.e. disjoint ranks that jointly cover the whole dataset.
 
     Both halves have to be asserted together: disjointness alone passes under double sharding
     (1/world**2 slices are disjoint), coverage alone passes if a rank re-reads windows another
     rank already has. Failures report the offending pair, the form a broken split takes.
     """
     world = len(per_rank)
-    total = N_SHARDS * WINDOWS_PER_SHARD
     counts = [len(w) for w in per_rank]
     for rank, windows in enumerate(per_rank):
         assert windows, f'{label}: rank {rank} got no data at all'
@@ -174,7 +187,7 @@ def _assert_partitions_dataset(per_rank: list[list[tuple[int, ...]]], label: str
         assert not dupes, f'{label}: rank {rank} streamed {dupes} window(s) twice itself'
     for a in range(world):
         for b in range(a + 1, world):
-            shared = set(per_rank[a]) & set(per_rank[b])
+            shared = set(per_rank[a]) & set(per_rank[b]) # intersection of windows seen by ranks a and b
             assert not shared, (
                 f'{label}: ranks {a} and {b} share {len(shared)}/{counts[a]} window(s) -- the '
                 f'stream is being copied to ranks instead of split across them'
@@ -200,7 +213,9 @@ def test_b4_ranks_partition_the_stream_with_dataloader_workers(fake_data, world)
     ``world=2`` divides cleanly, a different path in ``datasets``.
     """
     per_rank = [_rank_epoch_windows(fake_data, world, r, num_workers=4) for r in range(world)]
-    _assert_partitions_dataset(per_rank, f'{world} ranks x 4 workers')
+    _assert_partitions_dataset(
+        per_rank, f'{world} ranks x 4 workers', total=_total_windows(fake_data)
+    )
 
 
 def _presplit_rank_epoch_windows(data_dir: Path, world: int, rank: int) -> list[tuple[int, ...]]:
@@ -239,7 +254,7 @@ def test_b5_presplit_shards_twice_and_loses_data(fake_data):
     """
     world = 3
     per_rank = [_presplit_rank_epoch_windows(fake_data, world, r) for r in range(world)]
-    total = N_SHARDS * WINDOWS_PER_SHARD
+    total = _total_windows(fake_data)
     union: set[tuple[int, ...]] = set()
     for windows in per_rank:
         union |= set(windows)
