@@ -125,8 +125,8 @@ def _named_nodes(problem: Any) -> set[tuple[int, int]]:
     `problem.template`). Nothing else in the text names a node: this iGSM configuration
     states parameter equations only, it never verbalises the structure graph.
 
-    The question sentence is excluded here; :func:`named_params` folds it back in, since
-    only some probes read it.
+    The question sentence is excluded here; :func:`named_params` adds its parameter back
+    directly, rather than treating its node as named.
     """
     nodes: set[tuple[int, int]] = set()
     for param in problem.problem_order:
@@ -141,46 +141,31 @@ def _named_nodes(problem: Any) -> set[tuple[int, int]]:
     return nodes
 
 
-def named_params(problem: Any, *, with_question: bool = True) -> list[Param]:
-    """Candidate parameters grounded in the problem text, in `problem.all_param` order.
+def named_params(problem: Any) -> list[Param]:
+    """Candidate parameters the problem points at, in `problem.all_param` order.
 
-    iGSM's `all_param` is the full Cartesian product over the *layer widths*
-    (`set_whole_template`), consulting neither the structure graph `G` nor the sentences
-    actually emitted. `Graph.init` gives every node a parent but not necessarily a child,
-    so a top-layer node can end up with no edges and no sentence, yet still contribute
-    parameters -- "each Crab's Elbow Joint" in a text that only mentions Moray Eels. No
-    probe can answer those, and they are why `all_param` never holds fewer than
-    `2*2 + 2*1 = 6` entries however small the problem is.
+    A parameter is a candidate when it is:
 
-    Kept instead:
+    * an instance parameter `problem_order` states;
+    * an abstract parameter of a node the description names ("each Moray Eel's Organs",
+      askable even when this problem does not ask it);
+    * the question's parameter -- in ~1% of problems it targets a node no sentence mentions
+      ("How many Classroom does Green Field Elementary have?", answer 0), probed anyway.
 
-    * every **instance** parameter in `problem_order` -- the relations the description
-      states ("The number of each Moray Eel's Biceps equals ...");
-    * every **abstract** parameter of a named node -- "how many <category> does <node>
-      have?", askable of any node the text mentions even when unasked here ("each Moray
-      Eel's Organs").
-
-    Unstated instance parameters are not generated the way abstract ones are: a pair the
-    description never relates is not a fact about the text, whereas a node's category
-    totals follow from the sentences about it.
-
-    `with_question` additionally keeps the question's own parameter, for probes read after
-    the question (`nece`) rather than before it (`dep`). It matters for the ~1% of problems
-    whose question targets a node isolated in the structure graph -- "How many Classroom
-    does Green Field Elementary have?" when nothing was said about that school, so the
-    answer is 0. That parameter is `nece = 1`, so dropping it would delete a positive
-    label; `dep` never reads the question and must not see it.
+    iGSM's `all_param` instead enumerates the full product over layer widths, consulting
+    neither the structure graph `G` nor the sentences emitted: it offers "each Crab's Elbow
+    Joint" in a text about Moray Eels, and never fewer than `2*2 + 2*1 = 6` entries. An
+    unstated instance parameter stays out -- a pair the description never relates is not a
+    fact about the text -- while a node's category totals follow from its sentences.
     """
     nodes = _named_nodes(problem)
     keep = {param for param in problem.problem_order if param[0] == 0}
     keep |= {(1, i, j, k) for i, j in nodes if i < problem.d - 1 for k in range(i + 1, problem.d)}
-    if with_question:
-        keep.add(problem.ques_idx)
-        assert keep.issuperset(problem.topological_order), (
-            'a parameter necessary for the answer is not grounded in the problem text: '
-            f'{sorted(set(problem.topological_order) - keep)} -- nece labels would lose '
-            'positives'
-        )
+    keep.add(problem.ques_idx)
+    assert keep.issuperset(problem.topological_order), (
+        'a parameter necessary for the answer is not a candidate: '
+        f'{sorted(set(problem.topological_order) - keep)} -- nece labels would lose positives'
+    )
     return [param for param in problem.all_param if param in keep]
 
 
@@ -223,7 +208,6 @@ def regenerate_problem(
     split: str = 'test',
     med_cfg: dict[str, Any] | None = None,
     keys: tuple[str, ...] = LABEL_KEYS,
-    with_question: bool = True,
 ) -> ProbeProblem:
     """Regenerate one iGSM problem for `seed` and extract its probe labels.
 
@@ -233,8 +217,7 @@ def regenerate_problem(
 
     Candidates are :func:`named_params`, and every label array is narrowed to them, so
     `all_param`, `labels`, `nece` and `dep()` share one indexing -- the one a row's
-    `param_a`/`param_b` refer to. `with_question` says whether the probe reads the question
-    sentence; pass False for `dep`, which is probed before it.
+    `param_a`/`param_b` refer to.
     """
     ensure_igsm_submodule()
     from tools.tools import fix_seed  # type: ignore[import-not-found]
@@ -251,7 +234,7 @@ def regenerate_problem(
 
     labels = problem.lora_label(list(keys))  # (1 + n_steps, n_all_param, n_keys)
 
-    keep = set(named_params(problem, with_question=with_question))
+    keep = set(named_params(problem))
     param_index = [n for n, param in enumerate(problem.all_param) if param in keep]
 
     token_id = list(gen.token_id)

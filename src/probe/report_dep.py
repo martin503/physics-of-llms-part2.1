@@ -5,8 +5,8 @@ Pages: copy to ``docs/index.html`` and enable Pages on the repo). Layout: proble
 the left (with the probe's marker tokens rendered as chips), the problem's dependency
 graph on the right -- every parameter as a node on a circle, every tested (A, B) pair as
 a directed edge A -> B ("A depends on B"). The nodes are the problem's candidate parameters
-(``src.probe.labels.named_params``): the variables the problem description names, plus the
-category totals askable of those nodes.
+(``src.probe.labels.named_params``), not iGSM's raw ``all_param``, so a variable the problem
+never mentions is not drawn.
 
 Encoding (user spec): **line style carries the true label** (solid = dependency exists,
 dashed = none), **colour carries prediction correctness** (green = correct, red = wrong):
@@ -70,9 +70,8 @@ def _problem_payload(
     """Regenerate problem `seed` and package text + parameter names + its edge list."""
     from src.probe.labels import regenerate_problem
 
-    # with_question=False mirrors how the dep rows were built; the edge list addresses
-    # parameters by their index in the resulting list
-    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg, with_question=False)
+    # the edge list addresses parameters by their index in pp.all_param
+    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg)
     problem = pp.problem
     nece = pp.nece
     params = [

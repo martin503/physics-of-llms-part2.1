@@ -139,11 +139,11 @@ def test_named_params_does_not_invent_instance_relations():
     assert (0, 0, 0, 1) not in kept and (0, 0, 1, 0) not in kept  # the unstated cross pairs
 
 
-def test_with_question_controls_the_question_only_parameter():
+def test_named_params_keeps_the_question_parameter_and_only_that_one():
     """The seed-57 shape: the question targets a node the description never names.
 
-    ``nece`` reads the question and that parameter is the answer (``nece = 1``), so it must
-    survive; ``dep`` is probed before the question and must not see it.
+    That parameter is the answer (``nece = 1``) and worth probing regardless, but it is the
+    only thing the question designates -- its node's other parameters stay out.
     """
     stated, ques = (0, 0, 1, 0), (1, 0, 0, 1)  # ques owner (0, 0) appears in no sentence
     p = FakeProblem(
@@ -154,13 +154,13 @@ def test_with_question_controls_the_question_only_parameter():
         ques_idx=ques,
         topological_order=[ques],
     )
-    assert ques in named_params(p, with_question=True)
-    assert ques not in named_params(p, with_question=False)
-    assert stated in named_params(p, with_question=False)  # the rest is unaffected
+    kept = named_params(p)
+    assert ques in kept and stated in kept
+    assert (0, 0, 0, 0) not in kept and (0, 0, 0, 1) not in kept  # that node's own parameters
 
 
 def test_named_params_rejects_dropping_a_necessary_parameter():
-    """Guard: a ``nece = 1`` parameter outside the universe would delete a positive label."""
+    """Guard: a ``nece = 1`` parameter left out would silently delete a positive label."""
     stated, orphan = (0, 0, 1, 0), (1, 0, 0, 1)
     p = FakeProblem(
         d=2,
@@ -171,7 +171,7 @@ def test_named_params_rejects_dropping_a_necessary_parameter():
         topological_order=[stated, orphan],  # orphan is necessary but grounded by nothing
     )
     with pytest.raises(AssertionError, match='necessary for the answer'):
-        named_params(p, with_question=True)
+        named_params(p)
 
 
 # --------------------------------------------------------------------------- #
@@ -227,10 +227,9 @@ def test_filtering_drops_no_positive_label(seed):
     A dropped positive would be invisible in aggregate metrics (the classes are heavily
     imbalanced) while quietly making the task easier than it is.
     """
-    nece_pp = regenerate_problem(seed, split='test', with_question=True)
-    dep_pp = regenerate_problem(seed, split='test', with_question=False)
-    raw_dep, _nece_idx, _unnece_idx = nece_pp.problem.lora_label2('dep')
+    pp = regenerate_problem(seed, split='test')
+    raw_dep, _nece_idx, _unnece_idx = pp.problem.lora_label2('dep')
 
     # nece = 1 is exactly "in the solution's topological order"; none may be filtered out
-    assert nece_pp.nece.sum() == len(nece_pp.problem.topological_order)
-    assert dep_pp.dep().sum() == raw_dep.sum()  # every dependency survives
+    assert pp.nece.sum() == len(pp.problem.topological_order)
+    assert pp.dep().sum() == raw_dep.sum()  # every dependency survives

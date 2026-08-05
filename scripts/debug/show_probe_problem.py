@@ -15,14 +15,13 @@ graph and therefore mentioned by no sentence at all:
         The text is about Moray Eels and establishes 3 variables, but Crab is a second
         creature with no organs, so `all_param` also offers "each Crab's Elbow Joint",
         "each Crab's Biceps" and "each Crab's Organs" -- 6 candidates for a 3-variable
-        problem. This is the problem shown in the published report; the filter keeps 3.
+        problem. This is the problem shown in the published report; 3 of 6 are probed.
 
     python scripts/debug/show_probe_problem.py 57 --split test
 
-        Green Field Elementary is isolated too, but here the *question* asks about it
-        ("How many Classroom does Green Field Elementary have?", answer 0). So it is kept
-        for nece, which reads the question, and dropped for dep, which does not:
-        12 candidates -> 7 for nece, 6 for dep.
+        Green Field Elementary is isolated too, but the *question* asks about it ("How
+        many Classroom does Green Field Elementary have?", answer 0), so that one
+        parameter is probed while the school's others are not: 7 of 12.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.probe.labels import named_params, regenerate_problem  # noqa: E402
+from src.probe.labels import regenerate_problem  # noqa: E402
 
 
 def main() -> None:
@@ -63,9 +62,8 @@ def main() -> None:
         if args.max_edge is not None:
             med_cfg['max_edge'] = args.max_edge
 
-    nece_pp = regenerate_problem(args.seed, split=split, med_cfg=med_cfg, with_question=True)
-    dep_pp = regenerate_problem(args.seed, split=split, med_cfg=med_cfg, with_question=False)
-    p = nece_pp.problem
+    pp = regenerate_problem(args.seed, split=split, med_cfg=med_cfg)
+    p = pp.problem
 
     print(f'seed {args.seed}   split {split}   med_cfg {med_cfg or "IGSM_MED (default)"}')
     print(f'n_op {p.n_op}   depth {p.d}   layer widths {list(p.l)}   answer {p.ans}')
@@ -87,26 +85,20 @@ def main() -> None:
     for s in p.solution:
         print(f'  {s}.')
 
-    nece_keep = set(named_params(p, with_question=True))
-    dep_keep = set(named_params(p, with_question=False))
+    keep = set(pp.all_param)
     print(
-        f'\nCANDIDATE PARAMETERS ({len(p.all_param)} offered by iGSM, '
-        f'{len(nece_keep)} kept for nece, {len(dep_keep)} for dep)'
+        f'\nCANDIDATE PARAMETERS ({len(pp.all_param)} probed '
+        f'of {len(p.all_param)} offered by iGSM)'
     )
-    # "asked-by" = the probe queries this parameter at all; "necessary" = its nece label
-    print(f'  {"asked-by":>16}  {"necessary":>9}  {"param":<14}  description')
+    print(f'  {"probed":>6} {"nece":>4}  {"param":<14}  description')
     for param in p.all_param:
-        by_nece = 'nece' if param in nece_keep else ''
-        by_dep = 'dep' if param in dep_keep else ''
-        asked = f'{by_nece:>6},{by_dep:>5}'
-        necessary = (
-            str(int(nece_pp.nece[nece_pp.all_param.index(param)])) if param in nece_keep else '-'
-        )
-        print(f'  {asked:>16}  {necessary:>9}  {str(param):<14}  {p.get_param(param)}')
+        probed = 'yes' if param in keep else '-'
+        nece = int(pp.nece[pp.all_param.index(param)]) if param in keep else '-'
+        print(f'  {probed:>6} {nece:>4}  {str(param):<14}  {p.get_param(param)}')
 
-    print('\nDEPENDENCIES among the dep candidates (A depends on B)')
-    for a, b in zip(*dep_pp.dep().nonzero(), strict=True):
-        print(f'  {p.get_param(dep_pp.all_param[a])}  <-  {p.get_param(dep_pp.all_param[b])}')
+    print('\nDEPENDENCIES (A depends on B)')
+    for a, b in zip(*pp.dep().nonzero(), strict=True):
+        print(f'  {p.get_param(pp.all_param[a])}  <-  {p.get_param(pp.all_param[b])}')
 
 
 if __name__ == '__main__':

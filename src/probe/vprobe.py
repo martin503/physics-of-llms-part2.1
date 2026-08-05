@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,6 @@ logger = logging.getLogger(__name__)
 # in 300 iGSM-med test problems). [MID] separates the two parameter descriptions in dep(A, B).
 START, MID, END = 225, 227, 226
 
-TARGETS = ('nece', 'dep')
 
 # Resource guardrails. On Windows/WDDM, exhausting VRAM does NOT raise OOM: the driver silently
 # spills to "shared GPU memory" (= system RAM) and the machine thrashes over PCIe until it is
@@ -83,9 +83,8 @@ class VProbeRow:
     for nece, or [START] desc(A) [MID] desc(B) [END] for dep. The head reads the final token.
 
     `param_a`/`param_b` index the queried A and B into `ProbeProblem.all_param` (B is -1 for
-    nece rows), so mapping predictions back onto the dependency graph means regenerating the
-    problem the same way the rows were built -- `nece` and `dep` do not get the same candidate
-    list. Training ignores them.
+    nece rows), so predictions map back onto the dependency graph by regenerating the
+    problem. Training ignores them.
     """
 
     input_ids: list[int]
@@ -106,37 +105,33 @@ def rows_for_problem(
 ) -> tuple[list[VProbeRow], int]:
     """Build the V-probe rows for one regenerated problem; return `(rows, n_skipped)`.
 
-    Dispatches on `target` (`nece` or `dep`); see `_nece_rows_for_problem` /
-    `_dep_rows_for_problem` for the per-task input layout and read position.
-    `dep_all_pairs` (dep only) keeps every ordered off-diagonal pair instead of the
-    balanced subsample -- the natural-distribution universe used for *testing*.
+    Targets share the candidate parameters (`labels.named_params`) and differ only in their
+    builder (:data:`ROW_BUILDERS`), which owns the input layout and read position.
+    `dep_all_pairs` keeps every ordered off-diagonal pair instead of the balanced subsample
+    -- the natural distribution used for testing; one-parameter targets ignore it.
 
-    Parameters the problem text never names are not queried at all (`labels.named_params`),
-    and what counts as "the text" follows the target's own read position: `dep` stops at the
-    end of the description, so unlike `nece` it does not get the question's parameter.
-
-    This is the unit of work for offline multiprocess generation (`src.probe.data`):
-    each problem is fully determined by `(seed, split, med_cfg)` -- including the
-    seeded negative sampling for `dep` -- so workers can build disjoint seed ranges
-    independently and resumed/parallel runs are byte-identical.
+    `(seed, split, med_cfg, target)` fixes the result, including `dep`'s seeded negative
+    sampling, so the multiprocess generation in `src.probe.data` stays byte-identical
+    across workers and across resumes.
     """
-    if target not in TARGETS:
+    if target not in ROW_BUILDERS:
         raise ValueError(f'target must be one of {TARGETS}, got {target!r}')
-    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg, with_question=target != 'dep')
-    if target == 'dep':
-        return _dep_rows_for_problem(pp, seed, max_seq_len, all_pairs=dep_all_pairs)
-    return _nece_rows_for_problem(pp, seed, max_seq_len)
+    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg)
+    return ROW_BUILDERS[target](pp, seed, max_seq_len, dep_all_pairs)
 
 
 def _nece_rows_for_problem(
-    pp: ProbeProblem, seed: int, max_seq_len: int
+    pp: ProbeProblem, seed: int, max_seq_len: int, all_pairs: bool = False
 ) -> tuple[list[VProbeRow], int]:
     """`nece(A)` rows: one per candidate parameter, read at the end of the question.
+
+    Reached through `rows_for_problem(target='nece')`, which supplies `pp`.
 
     The prefix is the full problem+question (everything before the [223] solution marker),
     preceded by EOS -- matching pretraining, where every problem is preceded by the previous
     one's EOS. The parameter description comes from iGSM's own `Problem.get_param` (the same
     "each X's Y" phrasing used in problem sentences) and is wrapped in [START]/[END].
+    `all_pairs` is a pairwise-target option and does nothing for a one-parameter query.
     """
     ensure_igsm_submodule()
     from tools.tools import tokenizer  # iGSM's GPT-2 tokenizer
@@ -162,6 +157,8 @@ def _dep_rows_for_problem(
     pp: ProbeProblem, seed: int, max_seq_len: int, all_pairs: bool = False
 ) -> tuple[list[VProbeRow], int]:
     """`dep(A, B)` rows: balanced (A, B) pairs, read at the end of the problem description.
+
+    Reached through `rows_for_problem(target='dep')`, which supplies `pp`.
 
     Input layout (paper Figure 13b / Appendix B): the question is dropped and the two parameter
     descriptions are injected in one [START]..[END] block separated by [MID]::
@@ -215,6 +212,16 @@ def _dep_rows_for_problem(
                 )
             )
     return rows, skipped
+
+
+# Probe tasks, each mapped to the builder turning one problem into its rows. Builders share
+# the signature `(pp, seed, max_seq_len, all_pairs)`, so dispatch needs no per-target
+# branching and each owns its own read position. A new probe is one entry plus its builder.
+ROW_BUILDERS: dict[str, Callable[[ProbeProblem, int, int, bool], tuple[list[VProbeRow], int]]] = {
+    'nece': _nece_rows_for_problem,
+    'dep': _dep_rows_for_problem,
+}
+TARGETS = tuple(ROW_BUILDERS)
 
 
 def build_vprobe_rows(
