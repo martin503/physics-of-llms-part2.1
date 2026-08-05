@@ -15,6 +15,10 @@ This module regenerates a problem *keeping the live `Problem` object* (the parqu
 shards only store `token_id`, which is not enough to recover labels) and packages the
 token stream + the full label tensor + alignment metadata into one :class:`ProbeProblem`.
 
+What it does **not** take from iGSM unchanged is the candidate-parameter set: iGSM's
+`Problem.all_param` includes parameters of nodes the problem text never names, which no
+probe can answer. :func:`named_params` narrows it to the text-grounded ones.
+
 Token layout (from `iGSM/data_gen/prototype/id_gen.py` and `src/data/igsm.py`)::
 
     token_id = [222] prob_token [223] sol_token [224] ans_token [50256]
@@ -49,9 +53,10 @@ LABEL_KEYS: tuple[str, ...] = ('nece', 'known', 'can_next', 'nece_next', 'val')
 #          (direct edge between node j in layer i and node k in layer i+1)
 #   l = 1: ABSTRACT param -- "how many ln[k] (in total) does N[i][j] have?"
 #          (aggregate over all layer-k descendants of node (i, j); k in i+1 .. d-1)
-# `all_param` enumerates every such parameter, mentioned in the problem or not -- the
-# unmentioned ones are the natural negatives for nece(A).
 Param = tuple[int, int, int, int]
+
+# iGSM's sentinel node for "a literal constant"; never a real parameter.
+RAND_PARAM: Param = (-1, 0, 0, 0)
 
 
 @dataclass
@@ -61,12 +66,16 @@ class ProbeProblem:
 
     Attributes:
         token_id: Full token stream `[222] prob [223] sol [224] ans [50256]`.
-        all_param: All candidate parameters (see :data:`Param` for `(l, i, j, k)`
-            semantics); this is axis 1 of `labels`.
+        all_param: The candidate parameters (see :data:`Param` for `(l, i, j, k)`
+            semantics); this is axis 1 of `labels`. It is :func:`named_params`, *not*
+            iGSM's raw `problem.all_param`.
+        param_index: Position of each `all_param` entry inside `problem.all_param`, so
+            labels that iGSM computes over its own indexing (`dep`) can be subset.
         keys: Label-key names for axis 2 of `labels` (see :data:`LABEL_KEYS`).
-        labels: `(1 + n_steps, n_param, n_keys)` int array from `Problem.lora_label`.
-            Axis 0 is the reasoning step: row `i_` = state after the first `i_`
-            solution sentences. Step-independent keys (`nece`) are constant along it.
+        labels: `(1 + n_steps, n_param, n_keys)` int array from `Problem.lora_label`,
+            already narrowed to `all_param` along axis 1. Axis 0 is the reasoning step:
+            row `i_` = state after the first `i_` solution sentences. Step-independent
+            keys (`nece`) are constant along it.
         sol_bos_index: Index of the `[223]` token in `token_id` (the model has ingested
             the full problem statement here; also `step_positions[0]`).
         step_positions: `(1 + n_steps,)` token indices aligned to `labels` axis 0:
@@ -79,6 +88,7 @@ class ProbeProblem:
 
     token_id: list[int]
     all_param: list[Param]
+    param_index: list[int]
     keys: tuple[str, ...]
     labels: np.ndarray
     sol_bos_index: int
@@ -97,10 +107,81 @@ class ProbeProblem:
     def dep(self) -> np.ndarray:
         """`(n_param, n_param)` matrix; entry (a, b) = 1 iff param a depends on param b.
 
-        Computed on demand (transitive closure is not free), from `Problem.lora_label2`.
+        Computed on demand (transitive closure is not free), from `Problem.lora_label2`,
+        then narrowed to `all_param`. `dep` is reachability in the dependency DAG, so
+        restricting it to a subset of the nodes is exactly "the dependencies among these
+        parameters" -- dropping a node cannot change whether b is reachable from a.
         """
         labels, _nece_idx, _unnece_idx = self.problem.lora_label2('dep')
-        return labels
+        index = np.asarray(self.param_index)
+        return labels[np.ix_(index, index)]
+
+
+def _named_nodes(problem: Any) -> set[tuple[int, int]]:
+    """Hierarchy nodes `(layer, index)` that the problem *description* names.
+
+    `to_problem` emits one sentence per instance parameter in `problem_order`, naming that
+    parameter's two nodes plus the nodes of its operands (its predecessors in
+    `problem.template`). Nothing else in the text names a node: this iGSM configuration
+    states parameter equations only, it never verbalises the structure graph.
+
+    The question sentence is excluded here; :func:`named_params` folds it back in, since
+    only some probes read it.
+    """
+    nodes: set[tuple[int, int]] = set()
+    for param in problem.problem_order:
+        if param[0] != 0:
+            continue  # not its own sentence; picked up below as some sentence's operand
+        for kind, i, j, k in (param, *problem.template.predecessors(param)):
+            if kind == -1:
+                continue  # the literal-constant sentinel names nothing
+            nodes.add((i, j))
+            if kind == 0:
+                nodes.add((i + 1, k))  # instance params also name their child node
+    return nodes
+
+
+def named_params(problem: Any, *, with_question: bool = True) -> list[Param]:
+    """Candidate parameters grounded in the problem text, in `problem.all_param` order.
+
+    iGSM's `all_param` is the full Cartesian product over the *layer widths*
+    (`set_whole_template`), consulting neither the structure graph `G` nor the sentences
+    actually emitted. `Graph.init` gives every node a parent but not necessarily a child,
+    so a top-layer node can end up with no edges and no sentence, yet still contribute
+    parameters -- "each Crab's Elbow Joint" in a text that only mentions Moray Eels. No
+    probe can answer those, and they are why `all_param` never holds fewer than
+    `2*2 + 2*1 = 6` entries however small the problem is.
+
+    Kept instead:
+
+    * every **instance** parameter in `problem_order` -- the relations the description
+      states ("The number of each Moray Eel's Biceps equals ...");
+    * every **abstract** parameter of a named node -- "how many <category> does <node>
+      have?", askable of any node the text mentions even when unasked here ("each Moray
+      Eel's Organs").
+
+    Unstated instance parameters are not generated the way abstract ones are: a pair the
+    description never relates is not a fact about the text, whereas a node's category
+    totals follow from the sentences about it.
+
+    `with_question` additionally keeps the question's own parameter, for probes read after
+    the question (`nece`) rather than before it (`dep`). It matters for the ~1% of problems
+    whose question targets a node isolated in the structure graph -- "How many Classroom
+    does Green Field Elementary have?" when nothing was said about that school, so the
+    answer is 0. That parameter is `nece = 1`, so dropping it would delete a positive
+    label; `dep` never reads the question and must not see it.
+    """
+    nodes = _named_nodes(problem)
+    keep = {param for param in problem.problem_order if param[0] == 0}
+    keep |= {(1, i, j, k) for i, j in nodes if i < problem.d - 1 for k in range(i + 1, problem.d)}
+    if with_question:
+        keep.add(problem.ques_idx)
+        assert keep.issuperset(problem.topological_order), (
+            'a parameter necessary for the answer is not grounded in the problem text: '
+            f'{sorted(set(problem.topological_order) - keep)} -- nece labels would lose '
+            'positives'
+        )
+    return [param for param in problem.all_param if param in keep]
 
 
 def _new_idgen(med_cfg: dict[str, Any] | None = None):
@@ -142,12 +223,18 @@ def regenerate_problem(
     split: str = 'test',
     med_cfg: dict[str, Any] | None = None,
     keys: tuple[str, ...] = LABEL_KEYS,
+    with_question: bool = True,
 ) -> ProbeProblem:
     """Regenerate one iGSM problem for `seed` and extract its probe labels.
 
     Mirrors `src.data.igsm._generate_chunk` (fix_seed -> fresh IdGen -> gen_prob) so the
     same `(seed, split)` reproduces the same problem deterministically. Probe on the
     `test` split by default (bins 16-22) -- these problems were held out of training.
+
+    Candidates are :func:`named_params`, and every label array is narrowed to them, so
+    `all_param`, `labels`, `nece` and `dep()` share one indexing -- the one a row's
+    `param_a`/`param_b` refer to. `with_question` says whether the probe reads the question
+    sentence; pass False for `dep`, which is probed before it.
     """
     ensure_igsm_submodule()
     from tools.tools import fix_seed  # type: ignore[import-not-found]
@@ -162,7 +249,10 @@ def regenerate_problem(
     if not hasattr(problem, 'whole_template'):
         problem.set_whole_template()
 
-    labels = problem.lora_label(list(keys))  # (1 + n_steps, n_param, n_keys)
+    labels = problem.lora_label(list(keys))  # (1 + n_steps, n_all_param, n_keys)
+
+    keep = set(named_params(problem, with_question=with_question))
+    param_index = [n for n, param in enumerate(problem.all_param) if param in keep]
 
     token_id = list(gen.token_id)
     sol_bos_index = token_id.index(SOL_BOS)
@@ -172,9 +262,10 @@ def regenerate_problem(
 
     return ProbeProblem(
         token_id=token_id,
-        all_param=list(problem.all_param),
+        all_param=[problem.all_param[n] for n in param_index],
+        param_index=param_index,
         keys=tuple(keys),
-        labels=labels,
+        labels=labels[:, param_index, :],
         sol_bos_index=sol_bos_index,
         step_positions=step_positions,
         problem=problem,

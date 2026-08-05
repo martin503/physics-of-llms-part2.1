@@ -82,9 +82,10 @@ class VProbeRow:
     """One probe query. `input_ids` ends with the injected parameter block: [START] desc(A) [END]
     for nece, or [START] desc(A) [MID] desc(B) [END] for dep. The head reads the final token.
 
-    `param_a`/`param_b` are indices into the problem's `all_param` (the queried A and B; B is -1
-    for nece rows). They let test-time predictions be mapped back onto the dependency graph;
-    training ignores them (and datasets generated before they existed load as -1).
+    `param_a`/`param_b` index the queried A and B into `ProbeProblem.all_param` (B is -1 for
+    nece rows), so mapping predictions back onto the dependency graph means regenerating the
+    problem the same way the rows were built -- `nece` and `dep` do not get the same candidate
+    list. Training ignores them.
     """
 
     input_ids: list[int]
@@ -110,6 +111,10 @@ def rows_for_problem(
     `dep_all_pairs` (dep only) keeps every ordered off-diagonal pair instead of the
     balanced subsample -- the natural-distribution universe used for *testing*.
 
+    Parameters the problem text never names are not queried at all (`labels.named_params`),
+    and what counts as "the text" follows the target's own read position: `dep` stops at the
+    end of the description, so unlike `nece` it does not get the question's parameter.
+
     This is the unit of work for offline multiprocess generation (`src.probe.data`):
     each problem is fully determined by `(seed, split, med_cfg)` -- including the
     seeded negative sampling for `dep` -- so workers can build disjoint seed ranges
@@ -117,7 +122,7 @@ def rows_for_problem(
     """
     if target not in TARGETS:
         raise ValueError(f'target must be one of {TARGETS}, got {target!r}')
-    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg)
+    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg, with_question=target != 'dep')
     if target == 'dep':
         return _dep_rows_for_problem(pp, seed, max_seq_len, all_pairs=dep_all_pairs)
     return _nece_rows_for_problem(pp, seed, max_seq_len)

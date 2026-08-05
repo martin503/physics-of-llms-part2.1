@@ -54,13 +54,19 @@ from src.data.igsm import (
 )
 
 METADATA_NAME = 'metadata.json'
+# Bumped whenever the rows built from a given seed change, so resuming into a directory
+# written under an older rule fails instead of appending incompatible shards to it.
+#   2: candidates restricted to parameters the problem text names (`labels.named_params`),
+#      which also renumbers param_a/param_b
+ROWS_VERSION = 2
+
 # Fields that make two datasets different data (not just differently-run generation).
 # Datasets written before a key existed compare against its default (`_IDENTITY_DEFAULTS`).
 _IDENTITY_KEYS = (
     'target', 'split', 'seed_start', 'n_problems', 'med_cfg', 'max_seq_len', 'dep_all_pairs',
-    'seed_list',
+    'seed_list', 'rows_version',
 )
-_IDENTITY_DEFAULTS = {'dep_all_pairs': False, 'seed_list': None}
+_IDENTITY_DEFAULTS = {'dep_all_pairs': False, 'seed_list': None, 'rows_version': 1}
 
 
 def git_commit(cwd: Path) -> str | None:
@@ -230,6 +236,7 @@ def generate_rows_to_dir(
         'max_seq_len': MAX_SEQ_LEN,
         'dep_all_pairs': dep_all_pairs,
         'seed_list': seed_list,
+        'rows_version': ROWS_VERSION,
     }
 
     if overwrite and out.exists():
