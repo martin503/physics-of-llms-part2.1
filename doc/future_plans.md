@@ -6,6 +6,7 @@
 | small | generate regular continuations on probe prompts to justify need for training probes. |
 | small | DECIDED AGAINST for probe testing (see project_log 2026-07-18: probes are supervised classification, inspect is built for generation evals; custom `report-dep` covers sample inspection). Inspect still makes sense later for behavioral evals of the LM itself (iGSM answer accuracy). |
 | medium | DONE for dep(A, B): `test` + `report-dep` commands (interactive graph report, see probe_guide "Testing a trained probe"). Still open for nece. |
+| medium | match the paper's probing-query sampling (Appendix E): it draws parameters uniformly at random and keeps **at most 10** queries per problem and task, sampled without replacement. We keep every candidate parameter (`nece`, 12-72 per problem) and every positive pair plus matched negatives (`dep`). Rows within a problem are highly correlated, so a problem with 70 rows counts 70x toward the loss. Also affects row ordering: `dep` emits positives before negatives, and training length-buckets rather than shuffles rows, so a batch can be near-single-problem and near-single-label. |
 | medium | retrain the dep random control: the run started 2026-07-18 19:05 predates the seeded random-init fix, so its `probe.pt` cannot be re-paired with its transformer for test-time evaluation (training-time val metrics remain valid). |
 ---
 _postponed:_

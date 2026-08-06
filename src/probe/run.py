@@ -171,7 +171,7 @@ def gen_data(
     workers: Annotated[int, typer.Option('--workers', help='Parallel generation processes.')] = 8,
     problems_per_shard: Annotated[
         int,
-        typer.Option('--problems-per-shard', help='Problems per parquet shard (resume granularity).'),
+        typer.Option('--problems-per-shard', help='Problems per parquet shard (memory bound).'),
     ] = 1_000,
     model_path: Annotated[
         str | None,
@@ -210,7 +210,7 @@ def gen_data(
         int | None, typer.Option('--max-edge', help='Override iGSM-med graph-width cap (default 20).')
     ] = None,
 ) -> None:
-    """Generate V-probe rows offline (multiprocess, resumable parquet shards + metadata)."""
+    """Generate V-probe rows offline (multiprocess, parquet shards + metadata)."""
     import json as _json
 
     from src.probe.data import generate_rows_to_dir

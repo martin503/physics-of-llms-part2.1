@@ -84,7 +84,8 @@ class VProbeRow:
 
     `param_a`/`param_b` index the queried A and B into `ProbeProblem.all_param` (B is -1 for
     nece rows), so predictions map back onto the dependency graph by regenerating the
-    problem. Training ignores them.
+    problem. `n_op` is the source problem's reasoning-step count, carried so a dataset's
+    difficulty mix can be read off it directly. Training ignores all three.
     """
 
     input_ids: list[int]
@@ -92,6 +93,7 @@ class VProbeRow:
     group: int  # problem seed; split train/val by this, never by row
     param_a: int = -1
     param_b: int = -1
+    n_op: int = -1
 
 
 def rows_for_problem(
@@ -112,7 +114,7 @@ def rows_for_problem(
 
     `(seed, split, med_cfg, target)` fixes the result, including `dep`'s seeded negative
     sampling, so the multiprocess generation in `src.probe.data` stays byte-identical
-    across workers and across resumes.
+    however the seeds are split across workers.
     """
     if target not in ROW_BUILDERS:
         raise ValueError(f'target must be one of {TARGETS}, got {target!r}')
@@ -147,7 +149,8 @@ def _nece_rows_for_problem(
             continue
         rows.append(
             VProbeRow(
-                input_ids=input_ids, label=int(pp.nece[p_idx]), group=seed, param_a=p_idx
+                input_ids=input_ids, label=int(pp.nece[p_idx]), group=seed, param_a=p_idx,
+                n_op=pp.problem.n_op,
             )
         )
     return rows, skipped
@@ -171,7 +174,7 @@ def _dep_rows_for_problem(
     Pair selection (the `--target dep` universe): the full dep matrix is `n_param x n_param`, so we
     keep **all** positive pairs and sample an **equal** number of negatives (both off-diagonal),
     giving a per-problem-balanced dataset. Sampling is seeded from the problem `seed`, so offline
-    generation stays deterministic and resumable. Unlike `nece`, no `--balance-classes` is needed:
+    generation stays deterministic. Unlike `nece`, no `--balance-classes` is needed:
     the classes are ~50/50 by construction (the paper's natural dep distribution is ~83% negative).
 
     `all_pairs=True` skips the subsampling and keeps every ordered off-diagonal pair -- the
@@ -208,7 +211,7 @@ def _dep_rows_for_problem(
             rows.append(
                 VProbeRow(
                     input_ids=input_ids, label=label, group=seed,
-                    param_a=int(a), param_b=int(b),
+                    param_a=int(a), param_b=int(b), n_op=pp.problem.n_op,
                 )
             )
     return rows, skipped

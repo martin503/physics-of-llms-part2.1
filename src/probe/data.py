@@ -3,11 +3,12 @@
 Building V-probe rows regenerates every iGSM problem (graph, labels, tokens) -- CPU-bound
 work that caps online runs at a few hundred problems and makes the probe overfit. This
 module generates rows *offline* with a process pool (mirroring `src.data.igsm`) and writes
-them as resumable parquet shards, so training can draw on tens of thousands of problems.
+them as parquet shards, so training can draw on tens of thousands of problems.
 
 Each dataset directory contains:
 
-    batch_000000.parquet ...   columns: input_ids (list<int64>), label, group
+    batch_000000.parquet ...   columns: input_ids (list<int64>), label, group,
+                               param_a, param_b, n_op
     metadata.json              how the rows were made (target/split/seeds/config/commits)
 
 Provenance note: V-probe rows are token sequences + graph labels from the iGSM generator
@@ -16,11 +17,11 @@ model-independent. `model_path` is still recorded in metadata.json (when given) 
 dataset to the model it was generated *for*. Cached activations (`extract.py`) are the
 genuinely model-tied artifact; those embed the model in their own pipeline.
 
-Sharding/resume machinery is shared with `src.data.igsm` (same shard naming, same
-atomic-write-then-rename protocol), so an interrupted generation resumes from the last
-complete shard. Shard `b` covers seeds `[seed_start + b*problems_per_shard, ...)`, and
-each problem is fully determined by its seed -- so parallel and resumed runs produce
-byte-identical datasets.
+Sharding is shared with `src.data.igsm` (same shard naming, same atomic-write-then-rename
+protocol): shard `b` covers seeds `[seed_start + b*problems_per_shard, ...)`, which bounds
+peak memory and lets readers stream. Generation is not resumable -- it is cheap enough to
+redo -- but each problem is fully determined by its seed, so any number of workers produces
+the same rows in the same order.
 """
 
 from __future__ import annotations
@@ -47,26 +48,22 @@ from src.data.igsm import (
     IGSM_MED,
     IGSM_REPO_ROOT,
     REPO_ROOT,
-    _done_batches,
+    SHARD_PREFIX,
+    SHARD_SUFFIX,
+    _fine_unit,
     _shard_path,
-    _worker_counts,
+    _unit_counts,
     ensure_igsm_submodule,
 )
 
-METADATA_NAME = 'metadata.json'
-# Bumped whenever the rows built from a given seed change, so resuming into a directory
-# written under an older rule fails instead of appending incompatible shards to it.
-#   2: candidates restricted to parameters the problem text names (`labels.named_params`),
-#      which also renumbers param_a/param_b
-ROWS_VERSION = 2
+SHARD_GLOB = f'{SHARD_PREFIX}*{SHARD_SUFFIX}'
 
-# Fields that make two datasets different data (not just differently-run generation).
-# Datasets written before a key existed compare against its default (`_IDENTITY_DEFAULTS`).
-_IDENTITY_KEYS = (
-    'target', 'split', 'seed_start', 'n_problems', 'med_cfg', 'max_seq_len', 'dep_all_pairs',
-    'seed_list', 'rows_version',
-)
-_IDENTITY_DEFAULTS = {'dep_all_pairs': False, 'seed_list': None, 'rows_version': 1}
+METADATA_NAME = 'metadata.json'
+# Bumped whenever the rows built from a given seed change, so `metadata.json` records which
+# rule produced a dataset (older rows cannot be told apart by their contents).
+#   2: candidates restricted to parameters the problem text names (`labels.named_params`),
+#      which also renumbers param_a/param_b; rows carry the source problem's `n_op`
+ROWS_VERSION = 2
 
 
 def git_commit(cwd: Path) -> str | None:
@@ -87,7 +84,7 @@ def _rows_for_seeds(
     med_cfg: dict[str, Any],
     max_seq_len: int,
     dep_all_pairs: bool,
-) -> tuple[list[list[int]], list[int], list[int], list[int], list[int], int]:
+) -> tuple[list[list[int]], list[int], list[int], list[int], list[int], list[int], int]:
     """Worker: build rows for the given seeds as plain columns (picklable)."""
     from src.probe.vprobe import rows_for_problem
 
@@ -96,6 +93,7 @@ def _rows_for_seeds(
     groups: list[int] = []
     param_a: list[int] = []
     param_b: list[int] = []
+    n_op: list[int] = []
     skipped = 0
     for seed in seeds:
         rows, n_skipped = rows_for_problem(
@@ -109,7 +107,8 @@ def _rows_for_seeds(
             groups.append(r.group)
             param_a.append(r.param_a)
             param_b.append(r.param_b)
-    return input_ids, labels, groups, param_a, param_b, skipped
+            n_op.append(r.n_op)
+    return input_ids, labels, groups, param_a, param_b, n_op, skipped
 
 
 def _probe_seed_op(seed: int, split: str, med_cfg: dict[str, Any]) -> tuple[int, int, int]:
@@ -214,8 +213,7 @@ def generate_rows_to_dir(
 ) -> dict[str, Any]:
     """Generate V-probe rows for `n_problems` seeds into `out`; return the metadata dict.
 
-    Resumable: complete shards are skipped on re-run. If `out` already holds a dataset with
-    *different* identity parameters (target/split/seeds/config), refuses unless `overwrite`.
+    Refuses if `out` already holds a finished dataset, unless `overwrite`.
 
     `seed_list` overrides the sequential `[seed_start, seed_start + n_problems)` range with
     explicit problem seeds (e.g. the scattered showcase seeds from `find_showcase_seeds`);
@@ -242,27 +240,17 @@ def generate_rows_to_dir(
     if overwrite and out.exists():
         shutil.rmtree(out)
     meta_path = out / METADATA_NAME
+    # `metadata.json` is written only once generation finishes, so this refuses on *complete*
+    # datasets; an interrupted run leaves shards but no metadata and is simply redone.
     if meta_path.exists():
-        existing = json.loads(meta_path.read_text(encoding='utf-8'))
-        mismatched = {
-            k: (existing.get(k, _IDENTITY_DEFAULTS.get(k)), identity[k])
-            for k in _IDENTITY_KEYS
-            if existing.get(k, _IDENTITY_DEFAULTS.get(k)) != identity[k]
-        }
-        if mismatched:
-            raise ValueError(
-                f'{out} already holds a different dataset (mismatch: {mismatched}); '
-                'pass --overwrite or choose another --out'
-            )
+        raise ValueError(
+            f'{out} already holds a dataset; pass --overwrite or choose another --out'
+        )
     out.mkdir(parents=True, exist_ok=True)
     for partial in out.glob('*.partial'):
         partial.unlink()
 
     num_shards = math.ceil(n_problems / problems_per_shard) if n_problems > 0 else 0
-    done = _done_batches(out, num_shards)
-    if done:
-        print(f'Resuming: {len(done)}/{num_shards} shards already complete.')
-
     all_seeds = (
         list(seed_list) if seed_list is not None
         else list(range(seed_start, seed_start + n_problems))
@@ -273,13 +261,14 @@ def generate_rows_to_dir(
     with ProcessPoolExecutor(max_workers=workers, initializer=ensure_igsm_submodule) as pool:
         for b in range(num_shards):
             shard_seeds = all_seeds[b * problems_per_shard : (b + 1) * problems_per_shard]
-            if b in done:
-                pbar.update(len(shard_seeds))
-                continue
-            # contiguous seed sub-slices across workers; each seed is independent
+            # Contiguous seed sub-slices; each seed is independent. Many small units rather
+            # than one per worker, so the pool rebalances iGSM's heavy-tailed generation
+            # (see `_unit_counts`). Units are submitted and collected in order, so rows land
+            # in seed order whatever the split.
             futures = []
             cursor = 0
-            for count in _worker_counts(len(shard_seeds), workers):
+            unit = _fine_unit(len(shard_seeds), workers)
+            for count in _unit_counts(len(shard_seeds), unit):
                 futures.append(
                     pool.submit(
                         _rows_for_seeds, shard_seeds[cursor : cursor + count],
@@ -292,25 +281,27 @@ def generate_rows_to_dir(
             group_col: list[int] = []
             pa_col: list[int] = []
             pb_col: list[int] = []
+            op_col: list[int] = []
             for f in futures:
-                ids, labels, groups, params_a, params_b, _skipped = f.result()
+                ids, labels, groups, params_a, params_b, n_ops, _skipped = f.result()
                 ids_col.extend(ids)
                 label_col.extend(labels)
                 group_col.extend(groups)
                 pa_col.extend(params_a)
                 pb_col.extend(params_b)
+                op_col.extend(n_ops)
             table = pa.table(
                 {
                     'input_ids': ids_col, 'label': label_col, 'group': group_col,
-                    'param_a': pa_col, 'param_b': pb_col,
+                    'param_a': pa_col, 'param_b': pb_col, 'n_op': op_col,
                 }
             )
             _write_table_atomic(table, _shard_path(out, b))
             pbar.update(len(shard_seeds))
     pbar.close()
 
-    # dataset-wide stats from the shards themselves (correct even on resumed runs)
-    shards = sorted(out.glob('batch_*.parquet'))
+    # dataset-wide stats read back from the shards themselves
+    shards = sorted(out.glob(SHARD_GLOB))
     n_rows = 0
     n_positive = 0
     for shard in shards:
@@ -349,7 +340,7 @@ def load_vprobe_rows(path: Path | str) -> tuple[list, dict[str, Any]]:
     from src.probe.vprobe import VProbeRow
 
     path = Path(path)
-    shards = sorted(path.glob('batch_*.parquet'))
+    shards = sorted(path.glob(SHARD_GLOB))
     if not shards:
         raise FileNotFoundError(f'no parquet shards at {path} -- run `gen-data` first')
     meta_path = path / METADATA_NAME
@@ -362,14 +353,15 @@ def load_vprobe_rows(path: Path | str) -> tuple[list, dict[str, Any]]:
         ids_col = table.column('input_ids').to_pylist()
         label_col = table.column('label').to_pylist()
         group_col = table.column('group').to_pylist()
-        # pair-identity columns: datasets written before they existed load as -1
+        # provenance columns: datasets written before they existed load as -1
         names = table.column_names
         pa_col = table.column('param_a').to_pylist() if 'param_a' in names else [-1] * n
         pb_col = table.column('param_b').to_pylist() if 'param_b' in names else [-1] * n
+        op_col = table.column('n_op').to_pylist() if 'n_op' in names else [-1] * n
         rows.extend(
-            VProbeRow(input_ids=ids, label=label, group=group, param_a=a, param_b=b)
-            for ids, label, group, a, b in zip(
-                ids_col, label_col, group_col, pa_col, pb_col, strict=True
+            VProbeRow(input_ids=ids, label=label, group=group, param_a=a, param_b=b, n_op=op)
+            for ids, label, group, a, b, op in zip(
+                ids_col, label_col, group_col, pa_col, pb_col, op_col, strict=True
             )
         )
     return rows, metadata
