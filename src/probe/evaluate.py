@@ -1,6 +1,6 @@
 """Test-time evaluation of trained V-probes on held-out offline datasets.
 
-Training (``vprobe.py``) reports val metrics on a slice of its *own* dataset -- same seed
+Training (``vprobe_train.py``) reports val metrics on a slice of its *own* dataset -- same seed
 range, same balanced pair sampling for ``dep``. This module answers the follow-up question:
 what does a saved probe do on **fresh problems** (a disjoint seed range) and, for ``dep``,
 on the **natural pair distribution** (every ordered (A, B) pair, ~85-90% negative, generated
@@ -40,7 +40,8 @@ import torch
 from sklearn.metrics import matthews_corrcoef
 from tqdm import tqdm
 
-from src.probe.vprobe import VProbe, VProbeRow, _pad_batch
+from src.probe.queries import VProbeRow
+from src.probe.vprobe import VProbe, _pad_batch
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def predict_vprobe(
 
     `p1` is the softmax probability of class 1 (useful for threshold sweeps later; argmax
     `preds` corresponds to the 0.5 threshold). Batches are length-sorted internally (same
-    memory argument as `_evaluate` in vprobe.py) but results are scattered back, so
+    memory argument as `_evaluate` in vprobe_train.py) but results are scattered back, so
     `preds[i]` always belongs to `rows[i]`.
     """
     probe.eval()

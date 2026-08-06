@@ -33,7 +33,7 @@ integration-shaped and needs the frozen LM + iGSM submodule in the loop.
 | `test_group_split_prevents_leakage` | `groups=` sends whole problems to val; correlated-row leakage collapses MCC to chance while a row split memorises to ~1.0 | A regression where the group path silently falls back to row-level splitting |
 | `test_deterministic_given_seed` | Same seed → identical metrics | Unseeded init / split / shuffle |
 
-### `test_vprobe.py`: the V-probe's pure helpers (`src/probe/vprobe.py`)
+### `test_vprobe.py`: the V-probe's pure helpers (`src/probe/vprobe.py`, `src/probe/vprobe_train.py`)
 
 `VProbe`/`train_vprobe` need the LM in the loop and aren't unit-tested. These three helpers are
 plain array/list logic and two of them encode correctness guarantees the code leans on:
@@ -124,7 +124,7 @@ These have **no unit tests** because they need the frozen model and/or the iGSM 
 - **`src/probe/extract.py`**: the frozen forward pass and hidden-state caching. Correct
   layer indexing (`hidden_states[layer]`) and read-position selection are only exercised end
   to end.
-- **`src/probe/vprobe.py` training loop**: `VProbe` (embedding delta + frozen LM + head),
+- **`src/probe/vprobe.py` + `vprobe_train.py`**: `VProbe` (embedding delta + frozen LM + head),
   `train_vprobe`, grad checkpointing, the VRAM guardrails. Only the pure helpers above are unit-tested.
 - **`src/probe/labels.py` token/step alignment**: which solution step a token belongs to, against
   real iGSM `Problem` objects. The `assert` in `_solution_step_positions` is the in-code guard;

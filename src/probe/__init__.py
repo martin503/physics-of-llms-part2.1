@@ -2,6 +2,8 @@
 
 * :mod:`src.probe.extract` -- Stage A: run the *frozen* model, cache hidden states + labels.
 * :mod:`src.probe.probe`   -- Stage B: train a tiny ``nn.Linear`` on the cached tensors.
-* :mod:`src.probe.vprobe`  -- V-probe: query-conditioned probing through the frozen model.
+* :mod:`src.probe.queries` -- V-probe inputs: one problem seed -> labelled token sequences.
+* :mod:`src.probe.vprobe`  -- V-probe model: frozen LM + embedding delta + head at [END].
+* :mod:`src.probe.vprobe_train` -- V-probe training loop (group split, batching, metrics).
 * :mod:`src.probe.labels`  -- adapter over iGSM's ``Problem.lora_label`` (ground-truth labels).
 """

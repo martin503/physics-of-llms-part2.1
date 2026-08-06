@@ -1,4 +1,4 @@
-"""Tests for the V-probe's *pure* helpers (src.probe.vprobe).
+"""Tests for the V-probe's *pure* helpers (src.probe.vprobe, src.probe.vprobe_train).
 
 ``train_vprobe``/``VProbe`` need the frozen LM in the loop, so they're integration-shaped and
 not unit-tested here. But three helpers are plain array/list logic with no model dependency,
@@ -15,13 +15,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.probe.vprobe import (
-    EOS,
-    VProbeRow,
-    _length_bucketed_batches,
-    _pad_batch,
-    _split_by_group,
-)
+from src.probe.queries import VProbeRow
+from src.probe.vprobe import EOS, _pad_batch
+from src.probe.vprobe_train import _length_bucketed_batches, _split_by_group
 
 
 def test_pad_batch_end_index_points_at_last_real_token():

@@ -86,7 +86,7 @@ def _rows_for_seeds(
     dep_all_pairs: bool,
 ) -> tuple[list[list[int]], list[int], list[int], list[int], list[int], list[int], int]:
     """Worker: build rows for the given seeds as plain columns (picklable)."""
-    from src.probe.vprobe import rows_for_problem
+    from src.probe.queries import rows_for_problem
 
     input_ids: list[list[int]] = []
     labels: list[int] = []
@@ -219,7 +219,7 @@ def generate_rows_to_dir(
     explicit problem seeds (e.g. the scattered showcase seeds from `find_showcase_seeds`);
     shard `b` then covers `seed_list[b*problems_per_shard : (b+1)*problems_per_shard]`.
     """
-    from src.probe.vprobe import MAX_SEQ_LEN
+    from src.probe.queries import MAX_SEQ_LEN
 
     out = Path(out)
     med_cfg = IGSM_MED if med_cfg is None else med_cfg
@@ -337,7 +337,7 @@ def load_vprobe_rows(path: Path | str) -> tuple[list, dict[str, Any]]:
     Row order is deterministic (sorted shards, insertion order within each), so a fixed
     seed reproduces the same train/val group split across runs.
     """
-    from src.probe.vprobe import VProbeRow
+    from src.probe.queries import VProbeRow
 
     path = Path(path)
     shards = sorted(path.glob(SHARD_GLOB))

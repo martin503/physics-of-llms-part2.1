@@ -13,7 +13,9 @@ GPT2-12-12+RoPE trained on iGSM-med.
 | `data.py` | Offline V-probe datasets: multiprocess generation into resumable parquet shards + metadata (`gen-data` CLI). |
 | `extract.py` | **Linear probe** stage A: frozen forward passes, cache `(X, y, groups)` per layer to `.npz`. |
 | `probe.py` | **Linear probe** stage B: `nn.Linear` on cached activations, group split, MCC. |
-| `vprobe.py` | **V-probe** (§4.1): frozen LM + rank-8 embedding delta + linear head; trains through the model. |
+| `queries.py` | **V-probe** inputs: one problem seed → labelled token sequences; owns each target's input layout and read position. |
+| `vprobe.py` | **V-probe** (§4.1) model: frozen LM + rank-8 embedding delta + linear head at `[END]`; save/load of the trainable parts and the LM they pair with. |
+| `vprobe_train.py` | **V-probe** training loop: group split, length-bucketed batches, epoch loop, reported metrics. |
 | `evaluate.py` | Test-time evaluation: rebuild a saved probe from its run dir, predict on a held-out offline dataset, save per-row predictions + metrics into the run dir. |
 | `report_dep.py` | Standalone interactive HTML report for `dep(A, B)`: dependency graph of predictions vs ground truth, pretrained/random toggle, confusion matrices. |
 | `run.py` | Typer CLI: `extract`, `train`, `gen-data`, `vprobe`, `test`, `report-dep`. |
