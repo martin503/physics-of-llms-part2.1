@@ -9,7 +9,7 @@ Linear probe (two-stage, cached activations -- the degenerate baseline):
 V-probe (paper section 4.1; trains through the frozen model, no cache). Generate rows
 offline first (multiprocess; a few hundred online problems overfit badly), then train.
 `--target` selects the task: `nece` (necessity, read at end of question) or `dep`
-(pairwise dependency, read at end of problem description; see `src.probe.queries`):
+(pairwise dependency, read at end of problem description; see `src.probe.build_queries`):
 
     uv run python -m src.probe.run gen-data --target nece --n-problems 20000 --workers 8 \\
         --model-path final_models/gpt2-igsm-med --out data/probe/vprobe_nece_test_20k
@@ -338,7 +338,7 @@ def vprobe(
 ) -> None:
     """V-probe (paper 4.1): frozen LM + rank-8 embedding delta + linear head at [END]."""
     from src.probe.data import load_vprobe_rows
-    from src.probe.queries import build_vprobe_rows
+    from src.probe.build_queries import build_vprobe_rows
     from src.probe.vprobe import load_lm, save_vprobe
     from src.probe.vprobe_train import train_vprobe
 

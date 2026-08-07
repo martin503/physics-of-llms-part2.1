@@ -28,7 +28,7 @@ from jaxtyping import Float, Int
 from torch import nn
 
 from src.data.igsm import EOS
-from src.probe.queries import VProbeRow
+from src.probe.build_queries import VProbeRow
 
 logger = logging.getLogger(__name__)
 

@@ -17,7 +17,7 @@ import torch
 from torch import nn
 
 from src.probe.evaluate import classification_metrics, predict_vprobe
-from src.probe.queries import VProbeRow
+from src.probe.build_queries import VProbeRow
 
 
 def test_classification_metrics_confusion_counts():

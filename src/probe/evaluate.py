@@ -40,7 +40,7 @@ import torch
 from sklearn.metrics import matthews_corrcoef
 from tqdm import tqdm
 
-from src.probe.queries import VProbeRow
+from src.probe.build_queries import VProbeRow
 from src.probe.vprobe import VProbe, _pad_batch
 
 logger = logging.getLogger(__name__)

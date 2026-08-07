@@ -25,7 +25,7 @@ from sklearn.metrics import matthews_corrcoef
 from torch import nn
 from tqdm import tqdm
 
-from src.probe.queries import VProbeRow
+from src.probe.build_queries import VProbeRow
 from src.probe.vprobe import DEFAULT_VRAM_FRACTION, VProbe, _pad_batch, apply_memory_guardrails
 
 logger = logging.getLogger(__name__)

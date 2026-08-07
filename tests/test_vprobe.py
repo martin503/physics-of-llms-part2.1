@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.probe.queries import VProbeRow
+from src.probe.build_queries import VProbeRow
 from src.probe.vprobe import EOS, _pad_batch
 from src.probe.vprobe_train import _length_bucketed_batches, _split_by_group
 
