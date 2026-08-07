@@ -28,7 +28,7 @@ from jaxtyping import Float, Int
 from torch import nn
 
 from src.data.igsm import EOS
-from src.probe.build_queries import VProbeRow
+from src.probe.build_queries import ProbeQuery
 
 logger = logging.getLogger(__name__)
 
@@ -110,24 +110,24 @@ class VProbe(nn.Module):
 
 
 def _pad_batch(
-    rows: list[VProbeRow], device: str
+    queries: list[ProbeQuery], device: str
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Right-pad a batch with EOS; return (input_ids, attention_mask, end_index, labels).
 
     Right padding is safe here (unlike generation) because we read the hidden state at each
-    row's own [END] position, and RoPE positions of masked pad tokens never enter attention.
+    query's own [END] position, and RoPE positions of masked pad tokens never enter attention.
     """
-    max_len = max(len(r.input_ids) for r in rows)
-    ids = torch.full((len(rows), max_len), EOS, dtype=torch.long)
-    mask = torch.zeros((len(rows), max_len), dtype=torch.long)
-    end = torch.empty(len(rows), dtype=torch.long)
-    labels = torch.empty(len(rows), dtype=torch.long)
-    for i, r in enumerate(rows):
-        n = len(r.input_ids)
-        ids[i, :n] = torch.tensor(r.input_ids, dtype=torch.long)
+    max_len = max(len(q.input_ids) for q in queries)
+    ids = torch.full((len(queries), max_len), EOS, dtype=torch.long)
+    mask = torch.zeros((len(queries), max_len), dtype=torch.long)
+    end = torch.empty(len(queries), dtype=torch.long)
+    labels = torch.empty(len(queries), dtype=torch.long)
+    for i, q in enumerate(queries):
+        n = len(q.input_ids)
+        ids[i, :n] = torch.tensor(q.input_ids, dtype=torch.long)
         mask[i, :n] = 1
         end[i] = n - 1  # the [END] token is always last
-        labels[i] = r.label
+        labels[i] = q.label
     return ids.to(device), mask.to(device), end.to(device), labels.to(device)
 
 

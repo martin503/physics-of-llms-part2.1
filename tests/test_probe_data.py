@@ -6,7 +6,7 @@ invisible until someone runs ``gen-data`` for real. The fast tests here make tha
 
 The slow tests cover what an import check cannot -- that a pooled run writes shards the
 readers can read, and that splitting the seeds differently across workers yields the same
-rows.
+queries.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from src.data.igsm import _shard_path
-from src.probe.data import SHARD_GLOB, generate_rows_to_dir, load_vprobe_rows
+from src.probe.data import SHARD_GLOB, generate_queries_to_dir, load_vprobe_queries
 
 
 def test_module_imports():
@@ -48,24 +48,24 @@ def test_shard_glob_matches_shard_path():
 @pytest.mark.slow
 @pytest.mark.parametrize('target', ['nece', 'dep'])
 def test_generation_writes_shards_the_readers_can_read(tmp_path, target):
-    """End-to-end: a pooled run writes shards, metadata, and rows that load back.
+    """End-to-end: a pooled run writes shards, metadata, and queries that load back.
 
     Exercises every piece ``src.data.igsm`` supplies (shard naming, the work split) plus
     the process pool, none of which an import check touches.
     """
     out = tmp_path / target
-    meta = generate_rows_to_dir(out, 3, target=target, split='test', workers=2,
-                                problems_per_shard=2)
+    meta = generate_queries_to_dir(out, 3, target=target, split='test', workers=2,
+                                    problems_per_shard=2)
 
     assert meta['n_shards'] == 2  # 3 problems at 2 per shard
     assert sorted(out.glob(SHARD_GLOB)) == [_shard_path(out, 0), _shard_path(out, 1)]
     assert meta == json.loads((out / 'metadata.json').read_text(encoding='utf-8'))
 
     on_disk = sum(pq.read_table(str(p)).num_rows for p in sorted(out.glob(SHARD_GLOB)))
-    rows, loaded_meta = load_vprobe_rows(out)
-    assert meta['n_rows'] == on_disk == len(rows) > 0
+    queries, loaded_meta = load_vprobe_queries(out)
+    assert meta['n_queries'] == on_disk == len(queries) > 0
     assert loaded_meta == meta
-    assert {r.group for r in rows} == {0, 1, 2}  # one group per seed, none lost
+    assert {q.group for q in queries} == {0, 1, 2}  # one group per seed, none lost
 
 
 @pytest.mark.slow
@@ -77,8 +77,8 @@ def test_each_shard_holds_mixed_difficulties(tmp_path):
     shard. Difficulty is read from the dataset's own `n_op` column rather than regenerated.
     """
     out = tmp_path / 'ds'
-    meta = generate_rows_to_dir(out, 8, target='nece', split='test', workers=4,
-                                problems_per_shard=4)
+    meta = generate_queries_to_dir(out, 8, target='nece', split='test', workers=4,
+                                    problems_per_shard=4)
 
     for b in range(meta['n_shards']):
         table = pq.read_table(str(_shard_path(out, b)), columns=['group', 'n_op'])
@@ -90,19 +90,19 @@ def test_each_shard_holds_mixed_difficulties(tmp_path):
 
 @pytest.mark.slow
 def test_worker_count_does_not_change_rows(tmp_path):
-    """Splitting the same seeds across more workers must produce identical rows.
+    """Splitting the same seeds across more workers must produce identical queries.
 
-    Work distribution may decide *who* builds a row, never *which* rows exist or in what
+    Work distribution may decide *who* builds a query, never *which* queries exist or in what
     order -- the property the whole shard/unit design rests on, and the one that would
-    break silently. Run on ``dep`` because it is the only target whose rows depend on
+    break silently. Run on ``dep`` because it is the only target whose queries depend on
     randomness (seeded negative sampling); ``nece`` is deterministic regardless.
     """
     kwargs = dict(target='dep', split='test', problems_per_shard=2)
-    generate_rows_to_dir(tmp_path / 'w1', 3, workers=1, **kwargs)
-    generate_rows_to_dir(tmp_path / 'w3', 3, workers=3, **kwargs)
+    generate_queries_to_dir(tmp_path / 'w1', 3, workers=1, **kwargs)
+    generate_queries_to_dir(tmp_path / 'w3', 3, workers=3, **kwargs)
 
-    serial, _ = load_vprobe_rows(tmp_path / 'w1')
-    parallel, _ = load_vprobe_rows(tmp_path / 'w3')
-    assert [(r.input_ids, r.label, r.group, r.param_a, r.param_b) for r in serial] == [
-        (r.input_ids, r.label, r.group, r.param_a, r.param_b) for r in parallel
+    serial, _ = load_vprobe_queries(tmp_path / 'w1')
+    parallel, _ = load_vprobe_queries(tmp_path / 'w3')
+    assert [(q.input_ids, q.label, q.group, q.param_a, q.param_b) for q in serial] == [
+        (q.input_ids, q.label, q.group, q.param_a, q.param_b) for q in parallel
     ]

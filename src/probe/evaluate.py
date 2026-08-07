@@ -11,12 +11,12 @@ resurrect the probe -- ``config.json`` says which LM it trained through (path, o
 + seed) and ``probe.pt`` holds the trainable delta/head. Predictions land *inside* the run
 directory, keyed by dataset name::
 
-    trained_probes/<run>/test_<dataset>/predictions.parquet   per-row: group, param_a,
+    trained_probes/<run>/test_<dataset>/predictions.parquet   per-query: group, param_a,
                                                               param_b, label, pred, p1
     trained_probes/<run>/test_<dataset>/metrics.json          acc/mcc/confusion + provenance
 
-Keeping per-row predictions (not just metrics) is what makes the graph report
-(``report_dep.py``) possible: each dep row carries its (A, B) pair identity, so predictions
+Keeping per-query predictions (not just metrics) is what makes the graph report
+(``report_dep.py``) possible: each dep query carries its (A, B) pair identity, so predictions
 can be drawn as edges on the problem's dependency graph.
 
 Random-model caveat: the random-init control's transformer lives nowhere but the training
@@ -40,7 +40,7 @@ import torch
 from sklearn.metrics import matthews_corrcoef
 from tqdm import tqdm
 
-from src.probe.build_queries import VProbeRow
+from src.probe.build_queries import ProbeQuery
 from src.probe.vprobe import VProbe, _pad_batch
 
 logger = logging.getLogger(__name__)
@@ -52,25 +52,25 @@ METRICS_NAME = 'metrics.json'
 @torch.no_grad()
 def predict_vprobe(
     probe: VProbe,
-    rows: list[VProbeRow],
+    queries: list[ProbeQuery],
     *,
     batch_size: int = 32,
     device: str = 'cuda',
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Run the probe over `rows`; return `(preds, p1)` aligned to the *input* row order.
+    """Run the probe over `queries`; return `(preds, p1)` aligned to the *input* query order.
 
     `p1` is the softmax probability of class 1 (useful for threshold sweeps later; argmax
     `preds` corresponds to the 0.5 threshold). Batches are length-sorted internally (same
     memory argument as `_evaluate` in vprobe_train.py) but results are scattered back, so
-    `preds[i]` always belongs to `rows[i]`.
+    `preds[i]` always belongs to `queries[i]`.
     """
     probe.eval()
-    preds = np.empty(len(rows), dtype=np.int64)
-    p1 = np.empty(len(rows), dtype=np.float64)
-    order = sorted(range(len(rows)), key=lambda i: len(rows[i].input_ids))
+    preds = np.empty(len(queries), dtype=np.int64)
+    p1 = np.empty(len(queries), dtype=np.float64)
+    order = sorted(range(len(queries)), key=lambda i: len(queries[i].input_ids))
     for start in tqdm(range(0, len(order), batch_size), desc='predict', unit='batch'):
         idx = order[start : start + batch_size]
-        batch = [rows[i] for i in idx]
+        batch = [queries[i] for i in idx]
         ids, mask, end, _y = _pad_batch(batch, device)
         with torch.autocast(
             device_type='cuda', dtype=torch.bfloat16, enabled=device.startswith('cuda')
@@ -117,20 +117,20 @@ def evaluate_run(
     device: str = 'cuda',
 ) -> dict[str, Any]:
     """Load the probe from `run_dir`, predict on the offline dataset at `data_dir`, save both
-    per-row predictions and aggregate metrics into `test_output_dir(...)`; return the metrics.
+    per-query predictions and aggregate metrics into `test_output_dir(...)`; return the metrics.
     """
-    from src.probe.data import git_commit, load_vprobe_rows
+    from src.probe.data import git_commit, load_vprobe_queries
     from src.probe.vprobe import apply_memory_guardrails, load_lm, load_vprobe
 
     run_dir, data_dir = Path(run_dir), Path(data_dir)
     config = json.loads((run_dir / 'config.json').read_text(encoding='utf-8'))
     params = config['params']
 
-    rows, data_meta = load_vprobe_rows(data_dir)
+    queries, data_meta = load_vprobe_queries(data_dir)
     if data_meta and data_meta.get('target') != params.get('target'):
         raise ValueError(
             f"run {run_dir.name} was trained for target '{params.get('target')}' but "
-            f"{data_dir} holds '{data_meta.get('target')}' rows"
+            f"{data_dir} holds '{data_meta.get('target')}' queries"
         )
 
     if params.get('random_model'):
@@ -144,8 +144,8 @@ def evaluate_run(
     lm = load_lm(params.get('model_path'), device=device, seed=params.get('seed'))
     probe = load_vprobe(run_dir / 'probe.pt', lm, device=device)
 
-    preds, p1 = predict_vprobe(probe, rows, batch_size=batch_size, device=device)
-    labels = np.array([r.label for r in rows])
+    preds, p1 = predict_vprobe(probe, queries, batch_size=batch_size, device=device)
+    labels = np.array([q.label for q in queries])
     metrics: dict[str, Any] = classification_metrics(labels, preds)
     metrics['run_dir'] = str(run_dir)
     metrics['data_dir'] = str(data_dir)
@@ -156,9 +156,9 @@ def evaluate_run(
     out_dir.mkdir(parents=True, exist_ok=True)
     table = pa.table(
         {
-            'group': [r.group for r in rows],
-            'param_a': [r.param_a for r in rows],
-            'param_b': [r.param_b for r in rows],
+            'group': [q.group for q in queries],
+            'param_a': [q.param_a for q in queries],
+            'param_b': [q.param_b for q in queries],
             'label': labels,
             'pred': preds,
             'p1': p1,

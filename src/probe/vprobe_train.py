@@ -1,9 +1,9 @@
-"""Training loop for the V-probe: fit head + embedding delta on labelled rows.
+"""Training loop for the V-probe: fit head + embedding delta on labelled queries.
 
-The pieces come from either side of this module: rows from `queries.py`, the model and its
-batching from `vprobe.py`. What lives here is everything about *how the fitting is run* --
-the group-wise train/val split, batch construction, the epoch loop, and the metrics reported
-back to `run.py`.
+The pieces come from either side of this module: queries from `build_queries.py`, the model
+and its batching from `vprobe.py`. What lives here is everything about *how the fitting is
+run* -- the group-wise train/val split, batch construction, the epoch loop, and the metrics
+reported back to `run.py`.
 
 Unlike the cached-activation pipeline in `extract.py`, V-probe training must forward through
 the frozen LM every step: gradients have to flow *through* the transformer to reach the
@@ -25,19 +25,19 @@ from sklearn.metrics import matthews_corrcoef
 from torch import nn
 from tqdm import tqdm
 
-from src.probe.build_queries import VProbeRow
+from src.probe.build_queries import ProbeQuery
 from src.probe.vprobe import DEFAULT_VRAM_FRACTION, VProbe, _pad_batch, apply_memory_guardrails
 
 logger = logging.getLogger(__name__)
 
 
 def _length_bucketed_batches(
-    rows: list[VProbeRow], indices: np.ndarray, batch_size: int
-) -> list[list[VProbeRow]]:
-    """Group rows of similar length into batches, then shuffle the batch order.
+    queries: list[ProbeQuery], indices: np.ndarray, batch_size: int
+) -> list[list[ProbeQuery]]:
+    """Group queries of similar length into batches, then shuffle the batch order.
 
     Two wins over naive shuffling:
-      * memory: a batch's cost is `batch_size * max_len_in_batch`, so mixing a 600-token row
+      * memory: a batch's cost is `batch_size * max_len_in_batch`, so mixing a 600-token query
         with 31 short ones pads them all to 600. Bucketing keeps peak allocation near the
         average rather than the worst case.
       * speed: constant-ish shapes stop the caching allocator from fragmenting across many
@@ -45,34 +45,34 @@ def _length_bucketed_batches(
         15s) until the run spilled into system RAM.
     Batch *order* is still shuffled, so the optimiser does not see length-sorted data.
     """
-    by_len = sorted(indices, key=lambda i: len(rows[i].input_ids))
+    by_len = sorted(indices, key=lambda i: len(queries[i].input_ids))
     batches = [
-        [rows[i] for i in by_len[s : s + batch_size]] for s in range(0, len(by_len), batch_size)
+        [queries[i] for i in by_len[s : s + batch_size]] for s in range(0, len(by_len), batch_size)
     ]
     return batches
 
 
 def _split_by_group(
-    rows: list[VProbeRow], val_frac: float, seed: int
-) -> tuple[list[VProbeRow], list[VProbeRow]]:
+    queries: list[ProbeQuery], val_frac: float, seed: int
+) -> tuple[list[ProbeQuery], list[ProbeQuery]]:
     """Assign whole problems to train or val (see the leakage discussion in probe.py)."""
     rng = np.random.default_rng(seed)
-    unique_groups = rng.permutation(np.unique([r.group for r in rows]))
+    unique_groups = rng.permutation(np.unique([q.group for q in queries]))
     val_groups = set(unique_groups[: max(1, int(val_frac * len(unique_groups)))].tolist())
-    train = [r for r in rows if r.group not in val_groups]
-    val = [r for r in rows if r.group in val_groups]
+    train = [q for q in queries if q.group not in val_groups]
+    val = [q for q in queries if q.group in val_groups]
     return train, val
 
 
 @torch.no_grad()
 def _evaluate(
     probe: VProbe,
-    rows: list[VProbeRow],
+    queries: list[ProbeQuery],
     batch_size: int,
     device: str,
     loss_fn: nn.Module | None = None,
 ) -> dict[str, float]:
-    """Accuracy + MCC over `rows` (accuracy for comparability with the paper's Figure 7).
+    """Accuracy + MCC over `queries` (accuracy for comparability with the paper's Figure 7).
 
     `loss_fn`, if given, is also evaluated batch-wise and averaged; used to report a
     val loss comparable to the training loss without running eval twice.
@@ -82,9 +82,9 @@ def _evaluate(
     labels: list[int] = []
     total_loss = 0.0
     # length-sorted so eval batches don't pad to the global max either
-    order = sorted(range(len(rows)), key=lambda i: len(rows[i].input_ids))
+    order = sorted(range(len(queries)), key=lambda i: len(queries[i].input_ids))
     for start in range(0, len(order), batch_size):
-        batch = [rows[i] for i in order[start : start + batch_size]]
+        batch = [queries[i] for i in order[start : start + batch_size]]
         ids, mask, end, y = _pad_batch(batch, device)
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=device.startswith('cuda')):
             logits = probe(ids, mask, end)
@@ -100,12 +100,12 @@ def _evaluate(
         'acc_majority': float((labels_arr == majority).mean()),  # the paper's baseline row
     }
     if loss_fn is not None:
-        metrics['loss'] = total_loss / len(rows)
+        metrics['loss'] = total_loss / len(queries)
     return metrics
 
 
 def train_vprobe(
-    rows: list[VProbeRow],
+    queries: list[ProbeQuery],
     lm,
     *,
     n_classes: int = 2,
@@ -121,7 +121,7 @@ def train_vprobe(
     device: str = 'cuda',
     seed: int = 0,
 ) -> tuple[VProbe, dict[str, float], list[dict[str, float]]]:
-    """Train head + embedding delta on `rows` through the frozen `lm`; report val metrics.
+    """Train head + embedding delta on `queries` through the frozen `lm`; report val metrics.
 
     Returns `(probe, metrics, history)`: `metrics` has `acc_val` / `mcc_val`, the train-set
     counterparts (memorisation check), `acc_majority` (the paper's baseline), timing, and
@@ -142,7 +142,7 @@ def train_vprobe(
     apply_memory_guardrails(device, vram_fraction)
     if device.startswith('cuda'):
         torch.cuda.reset_peak_memory_stats()
-    train_rows, val_rows = _split_by_group(rows, val_frac, seed)
+    train_queries, val_queries = _split_by_group(queries, val_frac, seed)
 
     probe = VProbe(lm, n_classes=n_classes, rank=rank, grad_checkpointing=grad_checkpointing)
     probe = probe.to(device)
@@ -153,13 +153,13 @@ def train_vprobe(
     # minlength guarantees n_classes entries; clip avoids 1/0=inf for an absent class). With
     # reduction='mean' the global weight scale cancels, so the reported loss stays comparable.
     if balance_classes:
-        counts = np.bincount([r.label for r in train_rows], minlength=n_classes).clip(min=1)
+        counts = np.bincount([q.label for q in train_queries], minlength=n_classes).clip(min=1)
         class_weights = torch.tensor(1 / counts, dtype=torch.float32, device=device)
     else:
         class_weights = None
     loss_fn = nn.CrossEntropyLoss(weight=class_weights)
 
-    indices = np.arange(len(train_rows))
+    indices = np.arange(len(train_queries))
     history: list[dict[str, float]] = []
     t_start = time.perf_counter()
     # last known val numbers, carried into the postfix until the next epoch's eval pass
@@ -167,7 +167,7 @@ def train_vprobe(
     for epoch in range(epochs):
         t_epoch = time.perf_counter()
         probe.train()
-        batches = _length_bucketed_batches(train_rows, indices, batch_size)
+        batches = _length_bucketed_batches(train_queries, indices, batch_size)
         rng.shuffle(batches)  # shuffle batch order, keep within-batch lengths homogeneous
         total_loss = 0.0
         n_seen = 0
@@ -202,7 +202,7 @@ def train_vprobe(
                 refresh=False,
             )
         train_epoch_loss = total_loss / n_seen
-        val_metrics = _evaluate(probe, val_rows, batch_size, device, loss_fn=loss_fn)
+        val_metrics = _evaluate(probe, val_queries, batch_size, device, loss_fn=loss_fn)
         val_loss, val_mcc = val_metrics['loss'], val_metrics['mcc']
         epoch_seconds = time.perf_counter() - t_epoch
         history.append(
@@ -221,16 +221,16 @@ def train_vprobe(
             epoch + 1, epochs, train_epoch_loss, train_mcc, val_loss, val_mcc, epoch_seconds,
         )
 
-    val_metrics = _evaluate(probe, val_rows, batch_size, device)
-    train_metrics = _evaluate(probe, train_rows, batch_size, device)
+    val_metrics = _evaluate(probe, val_queries, batch_size, device)
+    train_metrics = _evaluate(probe, train_queries, batch_size, device)
     metrics = {
         'acc_val': val_metrics['acc'],
         'mcc_val': val_metrics['mcc'],
         'acc_majority': val_metrics['acc_majority'],
         'acc_train': train_metrics['acc'],
         'mcc_train': train_metrics['mcc'],
-        'n_train': float(len(train_rows)),
-        'n_val': float(len(val_rows)),
+        'n_train': float(len(train_queries)),
+        'n_val': float(len(val_queries)),
         'train_seconds': time.perf_counter() - t_start,
     }
     if device.startswith('cuda'):

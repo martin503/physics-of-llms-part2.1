@@ -6,7 +6,7 @@ Linear probe (two-stage, cached activations -- the degenerate baseline):
         --layer 6 --n-problems 500 --out data/probe/nece_l6.npz
     uv run python -m src.probe.run train --data data/probe/nece_l6.npz
 
-V-probe (paper section 4.1; trains through the frozen model, no cache). Generate rows
+V-probe (paper section 4.1; trains through the frozen model, no cache). Generate queries
 offline first (multiprocess; a few hundred online problems overfit badly), then train.
 `--target` selects the task: `nece` (necessity, read at end of question) or `dep`
 (pairwise dependency, read at end of problem description; see `src.probe.build_queries`):
@@ -178,7 +178,7 @@ def gen_data(
         typer.Option(
             '--model-path',
             help='Recorded in metadata.json as provenance (which model the data is for). '
-            'The rows themselves are model-independent -- only the tokenizer is involved.',
+            'The queries themselves are model-independent -- only the tokenizer is involved.',
         ),
     ] = None,
     out: Annotated[Path, typer.Option('--out')] = Path('data/probe/vprobe_nece_test_20k'),
@@ -197,7 +197,7 @@ def gen_data(
         Path | None,
         typer.Option(
             '--seeds-file',
-            help='JSON from `find-seeds`: generate rows for exactly those problem seeds '
+            help='JSON from `find-seeds`: generate queries for exactly those problem seeds '
             '(overrides --n-problems/--seed-start/--split/--max-op/--max-edge).',
         ),
     ] = None,
@@ -210,10 +210,10 @@ def gen_data(
         int | None, typer.Option('--max-edge', help='Override iGSM-med graph-width cap (default 20).')
     ] = None,
 ) -> None:
-    """Generate V-probe rows offline (multiprocess, parquet shards + metadata)."""
+    """Generate V-probe queries offline (multiprocess, parquet shards + metadata)."""
     import json as _json
 
-    from src.probe.data import generate_rows_to_dir
+    from src.probe.data import generate_queries_to_dir
 
     if dep_all_pairs and target != 'dep':
         raise typer.BadParameter('--dep-all-pairs only applies to --target dep')
@@ -225,7 +225,7 @@ def gen_data(
         split = showcase['split']  # the seeds are only meaningful under their own split
         med_cfg = showcase.get('med_cfg', med_cfg)  # regenerate under the config they were found with
     _setup_logging()
-    generate_rows_to_dir(
+    generate_queries_to_dir(
         out, n_problems, target=target, split=split, seed_start=seed_start, workers=workers,
         problems_per_shard=problems_per_shard, model_path=model_path, overwrite=overwrite,
         dep_all_pairs=dep_all_pairs, seed_list=seed_list, med_cfg=med_cfg,
@@ -288,7 +288,7 @@ def vprobe(
         Path | None,
         typer.Option(
             '--data',
-            help='Offline row dataset dir from `gen-data`. When given, rows are loaded from '
+            help='Offline query dataset dir from `gen-data`. When given, queries are loaded from '
             'disk and --n-problems/--seed-start/--split/--target are taken from its metadata.',
         ),
     ] = None,
@@ -299,7 +299,7 @@ def vprobe(
     epochs: Annotated[int, typer.Option('--epochs')] = 3,
     batch_size: Annotated[
         int,
-        typer.Option('--batch-size', help='Rows per step. Main VRAM knob; lower if you OOM.'),
+        typer.Option('--batch-size', help='Queries per step. Main VRAM knob; lower if you OOM.'),
     ] = 8,
     lr: Annotated[float, typer.Option('--lr')] = 1e-3,
     weight_decay: Annotated[float, typer.Option('--weight-decay')] = 1e-3,
@@ -337,8 +337,8 @@ def vprobe(
     ] = None,
 ) -> None:
     """V-probe (paper 4.1): frozen LM + rank-8 embedding delta + linear head at [END]."""
-    from src.probe.data import load_vprobe_rows
-    from src.probe.build_queries import build_vprobe_rows
+    from src.probe.data import load_vprobe_queries
+    from src.probe.build_queries import build_vprobe_queries
     from src.probe.vprobe import load_lm, save_vprobe
     from src.probe.vprobe_train import train_vprobe
 
@@ -358,27 +358,27 @@ def vprobe(
     log = logging.getLogger(__name__)
 
     if data is not None:
-        rows, data_meta = load_vprobe_rows(data)
+        queries, data_meta = load_vprobe_queries(data)
         if data_meta:
             if data_meta.get('target', target) != target:
                 raise typer.BadParameter(
-                    f"--target {target} but {data} holds '{data_meta['target']}' rows"
+                    f"--target {target} but {data} holds '{data_meta['target']}' queries"
                 )
             log.info(
-                'loaded %d rows from %s (split=%s, %d problems, model=%s)',
-                len(rows), data, data_meta.get('split'), data_meta.get('n_problems'),
+                'loaded %d queries from %s (split=%s, %d problems, model=%s)',
+                len(queries), data, data_meta.get('split'), data_meta.get('n_problems'),
                 data_meta.get('model_path'),
             )
         else:
             log.warning('no metadata.json in %s -- provenance unknown', data)
     else:
-        rows = build_vprobe_rows(n_problems, target=target, split=split, seed_start=seed_start)
+        queries = build_vprobe_queries(n_problems, target=target, split=split, seed_start=seed_start)
 
     # `seed` also fixes the random-init control's weights: `test` rebuilds the same LM from
     # the recorded seed, so a saved probe.pt can be re-paired with its transformer later.
     lm = load_lm(None if random_model else model_path, device=device, seed=seed)
     probe, metrics, history = train_vprobe(
-        rows, lm, rank=rank, epochs=epochs, batch_size=batch_size, lr=lr,
+        queries, lm, rank=rank, epochs=epochs, batch_size=batch_size, lr=lr,
         weight_decay=weight_decay, balance_classes=balance_classes,
         grad_checkpointing=grad_checkpointing, vram_fraction=vram_fraction,
         device=device, seed=seed,

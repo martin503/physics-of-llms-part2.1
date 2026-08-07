@@ -16,7 +16,7 @@ GPT2-12-12+RoPE trained on iGSM-med.
 | `queries.py` | **V-probe** inputs: one problem seed → labelled token sequences; owns each target's input layout and read position. |
 | `vprobe.py` | **V-probe** (§4.1) model: frozen LM + rank-8 embedding delta + linear head at `[END]`; save/load of the trainable parts and the LM they pair with. |
 | `vprobe_train.py` | **V-probe** training loop: group split, length-bucketed batches, epoch loop, reported metrics. |
-| `evaluate.py` | Test-time evaluation: rebuild a saved probe from its run dir, predict on a held-out offline dataset, save per-row predictions + metrics into the run dir. |
+| `evaluate.py` | Test-time evaluation: rebuild a saved probe from its run dir, predict on a held-out offline dataset, save per-query predictions + metrics into the run dir. |
 | `report_dep.py` | Standalone interactive HTML report for `dep(A, B)`: dependency graph of predictions vs ground truth, pretrained/random toggle, confusion matrices. |
 | `run.py` | Typer CLI: `extract`, `train`, `gen-data`, `vprobe`, `test`, `report-dep`. |
 
@@ -106,7 +106,7 @@ the same procedure on a random-init LM (`--random-model`). Evidence = pretrained
 
 Examples cluster by problem (shared read position for the linear probe, shared prefix for the
 V-probe), so a row-level split leaks correlated vectors into both halves and `*_val` just
-measures memorisation. Both trainers split by **problem seed** (`groups` / `VProbeRow.group`);
+measures memorisation. Both trainers split by **problem seed** (`groups` / `ProbeQuery.group`);
 an npz without `groups` falls back to a row split with a loud warning.
 
 ## Resource use (read before the V-probe)
@@ -123,8 +123,8 @@ and the desktop hangs. Mitigations, all on by default:
 | `--vram-fraction 0.85` | allocator refuses to grow past the cap → clean OOM instead of spilling |
 | `--grad-checkpointing` | recompute block activations in backward; ~30% slower, big VRAM saving |
 | bf16 autocast | halves activation bytes |
-| length bucketing | groups similar-length rows → peak tracks average length; avoids fragmentation |
-| `MAX_SEQ_LEN = 1024` | drops pathological rows that would set a batch's memory |
+| length bucketing | groups similar-length queries → peak tracks average length; avoids fragmentation |
+| `MAX_SEQ_LEN = 1024` | drops pathological queries that would set a batch's memory |
 | `--batch-size 8` (default) | the main VRAM knob |
 
 Measured after fixes: **peak 3.56 GiB**, flat batch times, no spill. `peak_vram_gib` is in
@@ -179,14 +179,14 @@ uv run python -m src.probe.run vprobe --target nece --random-model --n-problems 
 ### dep(A, B)
 
 Same shape as nece, but **no `--balance-classes`** (balanced by construction) and ~5–10× more
-rows per problem (one per sampled pair), so fewer problems give the same row count.
+queries per problem (one per sampled pair), so fewer problems give the same query count.
 
 ```bash
 uv run python -m src.probe.run vprobe --target dep --model-path final_models/gpt2-igsm-med --n-problems 500 --epochs 20 --batch-size 24 --seed 0
 uv run python -m src.probe.run vprobe --target dep --random-model --n-problems 500 --epochs 20 --batch-size 24 --seed 0
 ```
 
-For row counts that avoid overfitting, generate offline first (multiprocess, resumable) and
+For query counts that avoid overfitting, generate offline first (multiprocess, resumable) and
 pass `--data` instead of `--n-problems`:
 
 ```bash
@@ -236,8 +236,8 @@ uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretr
 ```
 
 Sizing: iGSM-med problems have 12–72 candidate params (~1,200 ordered pairs per problem on
-average), so 200 problems ≈ 240k rows. `test` is inference-only (no-grad, bf16) — far cheaper
-per row than training.
+average), so 200 problems ≈ 240k queries. `test` is inference-only (no-grad, bf16) — far cheaper
+per query than training.
 
 ### Difficulty and problem count
 
@@ -295,7 +295,7 @@ inspection need. Inspect becomes the right tool for *behavioral* evals of the LM
 See [future_plans.md](future_plans.md) for the live list. Structural gaps:
 
 - V-probe targets: `nece`, `dep` done. Step-dependent targets (`known/can_next/nece_next/value`)
-  need rows per `(problem, param, step)` truncated at `step_positions[i_]`.
+  need queries per `(problem, param, step)` truncated at `step_positions[i_]`.
 - `extract.py` only caches the `nece` position; a linear dep baseline needs the
   end-of-problem-description position cached too.
 - The per-example viewer (`report-dep`) is dep-only; nece has no equivalent yet.

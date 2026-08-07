@@ -13,7 +13,7 @@ The head always reads the final token, so the two tasks' differing read position
 Figure 13) are expressed purely by what each layout keeps: `nece` ends at the end of the
 *question*, `dep` drops the question and ends at the end of the *problem description*.
 
-Deliberately torch-free: rows are plain lists of token ids, so the multiprocess generation
+Deliberately torch-free: queries are plain lists of token ids, so the multiprocess generation
 in `src.probe.data` spawns workers that never import torch.
 """
 
@@ -36,29 +36,29 @@ logger = logging.getLogger(__name__)
 # in 300 iGSM-med test problems). [MID] separates the two parameter descriptions in dep(A, B).
 START, MID, END = 225, 227, 226
 
-MAX_SEQ_LEN = 1024  # rows longer than this are dropped (iGSM-med problems are far shorter)
+MAX_SEQ_LEN = 1024  # queries longer than this are dropped (iGSM-med problems are far shorter)
 
 
 @dataclass
-class VProbeRow:
+class ProbeQuery:
     """One probe query. `input_ids` ends with the injected parameter block: [START] desc(A) [END]
     for nece, or [START] desc(A) [MID] desc(B) [END] for dep. The head reads the final token.
 
     `param_a`/`param_b` index the queried A and B into `ProbeProblem.all_param` (B is -1 for
-    nece rows), so predictions map back onto the dependency graph by regenerating the
+    nece queries), so predictions map back onto the dependency graph by regenerating the
     problem. `n_op` is the source problem's reasoning-step count, carried so a dataset's
     difficulty mix can be read off it directly. Training ignores all three.
     """
 
     input_ids: list[int]
     label: int
-    group: int  # problem seed; split train/val by this, never by row
+    group: int  # problem seed; split train/val by this, never by query
     param_a: int = -1
     param_b: int = -1
     n_op: int = -1
 
 
-def rows_for_problem(
+def queries_for_problem(
     seed: int,
     *,
     target: str = 'nece',
@@ -66,11 +66,11 @@ def rows_for_problem(
     med_cfg: dict[str, Any] | None = None,
     max_seq_len: int = MAX_SEQ_LEN,
     dep_all_pairs: bool = False,
-) -> tuple[list[VProbeRow], int]:
-    """Build the V-probe rows for one regenerated problem; return `(rows, n_skipped)`.
+) -> tuple[list[ProbeQuery], int]:
+    """Build the V-probe queries for one regenerated problem; return `(queries, n_skipped)`.
 
     Targets share the candidate parameters (`labels.named_params`) and differ only in their
-    builder (:data:`ROW_BUILDERS`), which owns the input layout and read position.
+    builder (:data:`QUERY_BUILDERS`), which owns the input layout and read position.
     `dep_all_pairs` keeps every ordered off-diagonal pair instead of the balanced subsample
     -- the natural distribution used for testing; one-parameter targets ignore it.
 
@@ -78,18 +78,18 @@ def rows_for_problem(
     sampling, so the multiprocess generation in `src.probe.data` stays byte-identical
     however the seeds are split across workers.
     """
-    if target not in ROW_BUILDERS:
+    if target not in QUERY_BUILDERS:
         raise ValueError(f'target must be one of {TARGETS}, got {target!r}')
     pp = regenerate_problem(seed, split=split, med_cfg=med_cfg)
-    return ROW_BUILDERS[target](pp, seed, max_seq_len, dep_all_pairs)
+    return QUERY_BUILDERS[target](pp, seed, max_seq_len, dep_all_pairs)
 
 
-def _nece_rows_for_problem(
+def _nece_queries_for_problem(
     pp: ProbeProblem, seed: int, max_seq_len: int, all_pairs: bool = False
-) -> tuple[list[VProbeRow], int]:
-    """`nece(A)` rows: one per candidate parameter, read at the end of the question.
+) -> tuple[list[ProbeQuery], int]:
+    """`nece(A)` queries: one per candidate parameter, read at the end of the question.
 
-    Reached through `rows_for_problem(target='nece')`, which supplies `pp`.
+    Reached through `queries_for_problem(target='nece')`, which supplies `pp`.
 
     The prefix is the full problem+question (everything before the [223] solution marker),
     preceded by EOS -- matching pretraining, where every problem is preceded by the previous
@@ -101,29 +101,29 @@ def _nece_rows_for_problem(
     from tools.tools import tokenizer  # iGSM's GPT-2 tokenizer
 
     prefix = [EOS, *pp.token_id[: pp.sol_bos_index]]  # [EOS] [222] problem+question
-    rows: list[VProbeRow] = []
+    queries: list[ProbeQuery] = []
     skipped = 0
     for p_idx, param in enumerate(pp.all_param):
         desc = tokenizer.encode(' ' + pp.problem.get_param(param))
         input_ids = [*prefix, START, *desc, END]
         if len(input_ids) > max_seq_len:
-            skipped += 1  # guardrail: one pathological row must not set the batch's memory
+            skipped += 1  # guardrail: one pathological query must not set the batch's memory
             continue
-        rows.append(
-            VProbeRow(
+        queries.append(
+            ProbeQuery(
                 input_ids=input_ids, label=int(pp.nece[p_idx]), group=seed, param_a=p_idx,
                 n_op=pp.problem.n_op,
             )
         )
-    return rows, skipped
+    return queries, skipped
 
 
-def _dep_rows_for_problem(
+def _dep_queries_for_problem(
     pp: ProbeProblem, seed: int, max_seq_len: int, all_pairs: bool = False
-) -> tuple[list[VProbeRow], int]:
-    """`dep(A, B)` rows: balanced (A, B) pairs, read at the end of the problem description.
+) -> tuple[list[ProbeQuery], int]:
+    """`dep(A, B)` queries: balanced (A, B) pairs, read at the end of the problem description.
 
-    Reached through `rows_for_problem(target='dep')`, which supplies `pp`.
+    Reached through `queries_for_problem(target='dep')`, which supplies `pp`.
 
     Input layout (paper Figure 13b / Appendix B): the question is dropped and the two parameter
     descriptions are injected in one [START]..[END] block separated by [MID]::
@@ -162,58 +162,58 @@ def _dep_rows_for_problem(
     # get_param is not free, so encode each parameter's description once (n_param is small)
     desc_ids = [tokenizer.encode(' ' + pp.problem.get_param(param)) for param in pp.all_param]
 
-    rows: list[VProbeRow] = []
+    queries: list[ProbeQuery] = []
     skipped = 0
     for pairs, label in ((pos, 1), (neg, 0)):
         for a, b in pairs:
             input_ids = [*prefix, START, *desc_ids[a], MID, *desc_ids[b], END]
             if len(input_ids) > max_seq_len:
-                skipped += 1  # guardrail: one pathological row must not set the batch's memory
+                skipped += 1  # guardrail: one pathological query must not set the batch's memory
                 continue
-            rows.append(
-                VProbeRow(
+            queries.append(
+                ProbeQuery(
                     input_ids=input_ids, label=label, group=seed,
                     param_a=int(a), param_b=int(b), n_op=pp.problem.n_op,
                 )
             )
-    return rows, skipped
+    return queries, skipped
 
 
-# Probe tasks, each mapped to the builder turning one problem into its rows. Builders share
+# Probe tasks, each mapped to the builder turning one problem into its queries. Builders share
 # the signature `(pp, seed, max_seq_len, all_pairs)`, so dispatch needs no per-target
 # branching and each owns its own read position. A new probe is one entry plus its builder.
-ROW_BUILDERS: dict[str, Callable[[ProbeProblem, int, int, bool], tuple[list[VProbeRow], int]]] = {
-    'nece': _nece_rows_for_problem,
-    'dep': _dep_rows_for_problem,
+QUERY_BUILDERS: dict[str, Callable[[ProbeProblem, int, int, bool], tuple[list[ProbeQuery], int]]] = {
+    'nece': _nece_queries_for_problem,
+    'dep': _dep_queries_for_problem,
 }
-TARGETS = tuple(ROW_BUILDERS)
+TARGETS = tuple(QUERY_BUILDERS)
 
 
-def build_vprobe_rows(
+def build_vprobe_queries(
     n_problems: int,
     *,
     target: str = 'nece',
     split: str = 'test',
     seed_start: int = 0,
     dep_all_pairs: bool = False,
-) -> list[VProbeRow]:
-    """Build V-probe rows over `n_problems` problems, in-process (see `rows_for_problem`).
+) -> list[ProbeQuery]:
+    """Build V-probe queries over `n_problems` problems, in-process (see `queries_for_problem`).
 
-    Convenient for small runs; for the row counts that actually avoid overfitting,
+    Convenient for small runs; for the query counts that actually avoid overfitting,
     generate offline with `python -m src.probe.run gen-data` and pass `--data` instead.
     """
-    rows: list[VProbeRow] = []
+    queries: list[ProbeQuery] = []
     skipped = 0
-    for seed in tqdm(range(seed_start, seed_start + n_problems), desc='build rows', unit='prob'):
-        problem_rows, n_skipped = rows_for_problem(
+    for seed in tqdm(range(seed_start, seed_start + n_problems), desc='build queries', unit='prob'):
+        problem_queries, n_skipped = queries_for_problem(
             seed, target=target, split=split, dep_all_pairs=dep_all_pairs
         )
-        rows.extend(problem_rows)
+        queries.extend(problem_queries)
         skipped += n_skipped
     if skipped:
-        logger.info('dropped %d rows longer than MAX_SEQ_LEN=%d', skipped, MAX_SEQ_LEN)
-    lens = [len(r.input_ids) for r in rows]
+        logger.info('dropped %d queries longer than MAX_SEQ_LEN=%d', skipped, MAX_SEQ_LEN)
+    lens = [len(q.input_ids) for q in queries]
     logger.info(
-        '%d rows, token length: median %d, max %d', len(rows), int(np.median(lens)), max(lens)
+        '%d queries, token length: median %d, max %d', len(queries), int(np.median(lens)), max(lens)
     )
-    return rows
+    return queries

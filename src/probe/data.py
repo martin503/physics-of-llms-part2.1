@@ -1,18 +1,18 @@
-"""Offline V-probe row datasets: multiprocess generation into parquet shards + metadata.
+"""Offline V-probe query datasets: multiprocess generation into parquet shards + metadata.
 
-Building V-probe rows regenerates every iGSM problem (graph, labels, tokens) -- CPU-bound
+Building V-probe queries regenerates every iGSM problem (graph, labels, tokens) -- CPU-bound
 work that caps online runs at a few hundred problems and makes the probe overfit. This
-module generates rows *offline* with a process pool (mirroring `src.data.igsm`) and writes
+module generates queries *offline* with a process pool (mirroring `src.data.igsm`) and writes
 them as parquet shards, so training can draw on tens of thousands of problems.
 
 Each dataset directory contains:
 
     batch_000000.parquet ...   columns: input_ids (list<int64>), label, group,
                                param_a, param_b, n_op
-    metadata.json              how the rows were made (target/split/seeds/config/commits)
+    metadata.json              how the queries were made (target/split/seeds/config/commits)
 
-Provenance note: V-probe rows are token sequences + graph labels from the iGSM generator
--- the only model-adjacent piece is the GPT-2 tokenizer, so the rows themselves are
+Provenance note: V-probe queries are token sequences + graph labels from the iGSM generator
+-- the only model-adjacent piece is the GPT-2 tokenizer, so the queries themselves are
 model-independent. `model_path` is still recorded in metadata.json (when given) to tie a
 dataset to the model it was generated *for*. Cached activations (`extract.py`) are the
 genuinely model-tied artifact; those embed the model in their own pipeline.
@@ -21,7 +21,7 @@ Sharding is shared with `src.data.igsm` (same shard naming, same atomic-write-th
 protocol): shard `b` covers seeds `[seed_start + b*problems_per_shard, ...)`, which bounds
 peak memory and lets readers stream. Generation is not resumable -- it is cheap enough to
 redo -- but each problem is fully determined by its seed, so any number of workers produces
-the same rows in the same order.
+the same queries in the same order.
 """
 
 from __future__ import annotations
@@ -59,11 +59,13 @@ from src.data.igsm import (
 SHARD_GLOB = f'{SHARD_PREFIX}*{SHARD_SUFFIX}'
 
 METADATA_NAME = 'metadata.json'
-# Bumped whenever the rows built from a given seed change, so `metadata.json` records which
-# rule produced a dataset (older rows cannot be told apart by their contents).
+# Bumped whenever the queries built from a given seed change, so `metadata.json` records which
+# rule produced a dataset (older queries cannot be told apart by their contents).
 #   2: candidates restricted to parameters the problem text names (`labels.named_params`),
-#      which also renumbers param_a/param_b; rows carry the source problem's `n_op`
-ROWS_VERSION = 2
+#      which also renumbers param_a/param_b; queries carry the source problem's `n_op`
+#   3: metadata keys renamed row -> query (`rows_version`/`n_rows` -> `queries_version`/
+#      `n_queries`); the queries themselves are unchanged from 2
+QUERIES_VERSION = 3
 
 
 def git_commit(cwd: Path) -> str | None:
@@ -77,7 +79,7 @@ def git_commit(cwd: Path) -> str | None:
         return None
 
 
-def _rows_for_seeds(
+def _queries_for_seeds(
     seeds: list[int],
     target: str,
     split: str,
@@ -85,8 +87,8 @@ def _rows_for_seeds(
     max_seq_len: int,
     dep_all_pairs: bool,
 ) -> tuple[list[list[int]], list[int], list[int], list[int], list[int], list[int], int]:
-    """Worker: build rows for the given seeds as plain columns (picklable)."""
-    from src.probe.build_queries import rows_for_problem
+    """Worker: build queries for the given seeds as plain columns (picklable)."""
+    from src.probe.build_queries import queries_for_problem
 
     input_ids: list[list[int]] = []
     labels: list[int] = []
@@ -96,18 +98,18 @@ def _rows_for_seeds(
     n_op: list[int] = []
     skipped = 0
     for seed in seeds:
-        rows, n_skipped = rows_for_problem(
+        queries, n_skipped = queries_for_problem(
             seed, target=target, split=split, med_cfg=med_cfg, max_seq_len=max_seq_len,
             dep_all_pairs=dep_all_pairs,
         )
         skipped += n_skipped
-        for r in rows:
-            input_ids.append(r.input_ids)
-            labels.append(r.label)
-            groups.append(r.group)
-            param_a.append(r.param_a)
-            param_b.append(r.param_b)
-            n_op.append(r.n_op)
+        for q in queries:
+            input_ids.append(q.input_ids)
+            labels.append(q.label)
+            groups.append(q.group)
+            param_a.append(q.param_a)
+            param_b.append(q.param_b)
+            n_op.append(q.n_op)
     return input_ids, labels, groups, param_a, param_b, n_op, skipped
 
 
@@ -196,7 +198,7 @@ def _write_table_atomic(table: pa.Table, path: Path) -> None:
     os.replace(tmp, path)
 
 
-def generate_rows_to_dir(
+def generate_queries_to_dir(
     out: Path | str,
     n_problems: int,
     *,
@@ -211,7 +213,7 @@ def generate_rows_to_dir(
     dep_all_pairs: bool = False,
     seed_list: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Generate V-probe rows for `n_problems` seeds into `out`; return the metadata dict.
+    """Generate V-probe queries for `n_problems` seeds into `out`; return the metadata dict.
 
     Refuses if `out` already holds a finished dataset, unless `overwrite`.
 
@@ -234,7 +236,7 @@ def generate_rows_to_dir(
         'max_seq_len': MAX_SEQ_LEN,
         'dep_all_pairs': dep_all_pairs,
         'seed_list': seed_list,
-        'rows_version': ROWS_VERSION,
+        'queries_version': QUERIES_VERSION,
     }
 
     if overwrite and out.exists():
@@ -256,14 +258,14 @@ def generate_rows_to_dir(
         else list(range(seed_start, seed_start + n_problems))
     )
     pbar = tqdm(
-        total=n_problems, desc=f'gen vprobe-{target} rows', unit='prob', dynamic_ncols=True
+        total=n_problems, desc=f'gen vprobe-{target} queries', unit='prob', dynamic_ncols=True
     )
     with ProcessPoolExecutor(max_workers=workers, initializer=ensure_igsm_submodule) as pool:
         for b in range(num_shards):
             shard_seeds = all_seeds[b * problems_per_shard : (b + 1) * problems_per_shard]
             # Contiguous seed sub-slices; each seed is independent. Many small units rather
             # than one per worker, so the pool rebalances iGSM's heavy-tailed generation
-            # (see `_unit_counts`). Units are submitted and collected in order, so rows land
+            # (see `_unit_counts`). Units are submitted and collected in order, so queries land
             # in seed order whatever the split.
             futures = []
             cursor = 0
@@ -271,7 +273,7 @@ def generate_rows_to_dir(
             for count in _unit_counts(len(shard_seeds), unit):
                 futures.append(
                     pool.submit(
-                        _rows_for_seeds, shard_seeds[cursor : cursor + count],
+                        _queries_for_seeds, shard_seeds[cursor : cursor + count],
                         target, split, med_cfg, MAX_SEQ_LEN, dep_all_pairs,
                     )
                 )
@@ -302,11 +304,11 @@ def generate_rows_to_dir(
 
     # dataset-wide stats read back from the shards themselves
     shards = sorted(out.glob(SHARD_GLOB))
-    n_rows = 0
+    n_queries = 0
     n_positive = 0
     for shard in shards:
         labels = pq.read_table(str(shard), columns=['label']).column('label')
-        n_rows += len(labels)
+        n_queries += len(labels)
         n_positive += pc.sum(labels).as_py()
 
     metadata: dict[str, Any] = {
@@ -314,9 +316,9 @@ def generate_rows_to_dir(
         **identity,
         'problems_per_shard': problems_per_shard,
         'n_shards': len(shards),
-        'n_rows': n_rows,
-        'positive_frac': n_positive / n_rows if n_rows else 0.0,
-        'model_path': model_path,  # provenance only; rows are model-independent (see docstring)
+        'n_queries': n_queries,
+        'positive_frac': n_positive / n_queries if n_queries else 0.0,
+        'model_path': model_path,  # provenance only; queries are model-independent (see docstring)
         'tokenizer': 'gpt2 (iGSM; probe markers START=225 MID=227 END=226)',
         'repo_commit': git_commit(REPO_ROOT),
         'igsm_commit': git_commit(IGSM_REPO_ROOT),
@@ -325,19 +327,19 @@ def generate_rows_to_dir(
     }
     meta_path.write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
     print(
-        f'{n_problems} problems -> {n_rows} rows ({metadata["positive_frac"]:.3f} positive) '
+        f'{n_problems} problems -> {n_queries} queries ({metadata["positive_frac"]:.3f} positive) '
         f'in {len(shards)} shards at {out}'
     )
     return metadata
 
 
-def load_vprobe_rows(path: Path | str) -> tuple[list, dict[str, Any]]:
-    """Load an offline row dataset; return `(rows, metadata)`.
+def load_vprobe_queries(path: Path | str) -> tuple[list, dict[str, Any]]:
+    """Load an offline query dataset; return `(queries, metadata)`.
 
-    Row order is deterministic (sorted shards, insertion order within each), so a fixed
+    Query order is deterministic (sorted shards, insertion order within each), so a fixed
     seed reproduces the same train/val group split across runs.
     """
-    from src.probe.build_queries import VProbeRow
+    from src.probe.build_queries import ProbeQuery
 
     path = Path(path)
     shards = sorted(path.glob(SHARD_GLOB))
@@ -346,7 +348,7 @@ def load_vprobe_rows(path: Path | str) -> tuple[list, dict[str, Any]]:
     meta_path = path / METADATA_NAME
     metadata = json.loads(meta_path.read_text(encoding='utf-8')) if meta_path.exists() else {}
 
-    rows: list[VProbeRow] = []
+    queries: list[ProbeQuery] = []
     for shard in shards:
         table = pq.read_table(str(shard))
         n = table.num_rows
@@ -358,10 +360,10 @@ def load_vprobe_rows(path: Path | str) -> tuple[list, dict[str, Any]]:
         pa_col = table.column('param_a').to_pylist() if 'param_a' in names else [-1] * n
         pb_col = table.column('param_b').to_pylist() if 'param_b' in names else [-1] * n
         op_col = table.column('n_op').to_pylist() if 'n_op' in names else [-1] * n
-        rows.extend(
-            VProbeRow(input_ids=ids, label=label, group=group, param_a=a, param_b=b, n_op=op)
+        queries.extend(
+            ProbeQuery(input_ids=ids, label=label, group=group, param_a=a, param_b=b, n_op=op)
             for ids, label, group, a, b, op in zip(
                 ids_col, label_col, group_col, pa_col, pb_col, op_col, strict=True
             )
         )
-    return rows, metadata
+    return queries, metadata
