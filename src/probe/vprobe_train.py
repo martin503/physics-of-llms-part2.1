@@ -111,7 +111,7 @@ def train_vprobe(
     n_classes: int = 2,
     rank: int = 8,
     val_frac: float = 0.2,
-    epochs: int = 3,
+    epochs: int = 1,
     batch_size: int = 8,
     lr: float = 1e-3,
     weight_decay: float = 1e-3,
@@ -122,6 +122,9 @@ def train_vprobe(
     seed: int = 0,
 ) -> tuple[VProbe, dict[str, float], list[dict[str, float]]]:
     """Train head + embedding delta on `queries` through the frozen `lm`; report val metrics.
+
+    One epoch by default: an offline dataset shows every query once, with no duplicates.
+    Raise it only for small online runs, where one pass is too little signal.
 
     Returns `(probe, metrics, history)`: `metrics` has `acc_val` / `mcc_val`, the train-set
     counterparts (memorisation check), `acc_majority` (the paper's baseline), timing, and

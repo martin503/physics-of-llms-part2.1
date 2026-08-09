@@ -201,6 +201,22 @@ def gen_data(
             '(overrides --n-problems/--seed-start/--split/--max-op/--max-edge).',
         ),
     ] = None,
+    max_queries: Annotated[
+        int | None,
+        typer.Option(
+            '--max-queries',
+            help='Cap each problem at this many queries, sampled uniformly without replacement '
+            "(the paper's Appendix E rule is 10). Ignored with --dep-all-pairs.",
+        ),
+    ] = None,
+    uniform_difficulty: Annotated[
+        bool,
+        typer.Option(
+            '--uniform-difficulty',
+            help='Equal share of problems per reasoning-step count (op), instead of '
+            "iGSM's natural low-op-heavy sampling.",
+        ),
+    ] = False,
     max_op: Annotated[
         int | None,
         typer.Option('--max-op', help='Override iGSM-med difficulty cap (default 15). Must match '
@@ -229,6 +245,7 @@ def gen_data(
         out, n_problems, target=target, split=split, seed_start=seed_start, workers=workers,
         problems_per_shard=problems_per_shard, model_path=model_path, overwrite=overwrite,
         dep_all_pairs=dep_all_pairs, seed_list=seed_list, med_cfg=med_cfg,
+        max_queries=max_queries, uniform_difficulty=uniform_difficulty,
     )
 
 
@@ -296,7 +313,14 @@ def vprobe(
     seed_start: Annotated[int, typer.Option('--seed-start')] = 0,
     split: Annotated[str, typer.Option('--split')] = 'test',
     rank: Annotated[int, typer.Option('--rank', help='Rank of the embedding update.')] = 8,
-    epochs: Annotated[int, typer.Option('--epochs')] = 3,
+    epochs: Annotated[
+        int,
+        typer.Option(
+            '--epochs',
+            help='One pass by default, so an offline --data set shows every query exactly '
+            'once. Raise it only for small online runs.',
+        ),
+    ] = 1,
     batch_size: Annotated[
         int,
         typer.Option('--batch-size', help='Queries per step. Main VRAM knob; lower if you OOM.'),
@@ -437,8 +461,12 @@ def report_dep(
     ],
     n_problems: Annotated[
         int,
-        typer.Option('--n-problems', help='How many problems to include in the report.'),
-    ] = 12,
+        typer.Option(
+            '--n-problems',
+            help='Problems to include. Default 45 = the `find-seeds` default set (ops 1-15 x 3 '
+            'seeds); raise it to match a larger --max-op/--per-op scan.',
+        ),
+    ] = 45,
     out: Annotated[Path, typer.Option('--out')] = Path('visualizations/dep_probe_report.html'),
 ) -> None:
     """Render the interactive dep(A, B) report: problem text + dependency-graph view of both

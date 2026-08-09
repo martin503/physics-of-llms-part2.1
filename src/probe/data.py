@@ -34,7 +34,7 @@ import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
-from itertools import repeat
+from itertools import repeat, zip_longest
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +65,8 @@ METADATA_NAME = 'metadata.json'
 #      which also renumbers param_a/param_b; queries carry the source problem's `n_op`
 #   3: metadata keys renamed row -> query (`rows_version`/`n_rows` -> `queries_version`/
 #      `n_queries`); the queries themselves are unchanged from 2
+#   4: reserved for query capping + uniform difficulty (both in flight; `identity` records
+#      each setting, so whichever lands first bumps to 4 and the second leaves it there)
 QUERIES_VERSION = 3
 
 
@@ -86,6 +88,7 @@ def _queries_for_seeds(
     med_cfg: dict[str, Any],
     max_seq_len: int,
     dep_all_pairs: bool,
+    max_queries: int | None = None,
 ) -> tuple[list[list[int]], list[int], list[int], list[int], list[int], list[int], int]:
     """Worker: build queries for the given seeds as plain columns (picklable)."""
     from src.probe.build_queries import queries_for_problem
@@ -100,7 +103,7 @@ def _queries_for_seeds(
     for seed in seeds:
         queries, n_skipped = queries_for_problem(
             seed, target=target, split=split, med_cfg=med_cfg, max_seq_len=max_seq_len,
-            dep_all_pairs=dep_all_pairs,
+            dep_all_pairs=dep_all_pairs, max_queries=max_queries,
         )
         skipped += n_skipped
         for q in queries:
@@ -180,7 +183,15 @@ def find_showcase_seeds(
         'per_op': per_op,
         'n_scanned': n_scanned,
         'per_op_seeds': per_op_seeds,
-        'seeds': [s for seeds in per_op_seeds.values() for s in seeds],
+        # Interleaved across ops (op1 seed1, op2 seed2, ... then round again), not concatenated:
+        # `report-dep` embeds the *first* n_problems of the dataset, so an op-grouped list would
+        # show only the easiest few difficulties whenever n_problems < len(seeds).
+        'seeds': [
+            s
+            for group in zip_longest(*per_op_seeds.values())
+            for s in group
+            if s is not None
+        ],
         'created': datetime.now(UTC).isoformat(timespec='seconds'),
     }
     out = Path(out)
@@ -212,6 +223,8 @@ def generate_queries_to_dir(
     overwrite: bool = False,
     dep_all_pairs: bool = False,
     seed_list: list[int] | None = None,
+    max_queries: int | None = None,
+    uniform_difficulty: bool = False,
 ) -> dict[str, Any]:
     """Generate V-probe queries for `n_problems` seeds into `out`; return the metadata dict.
 
@@ -220,6 +233,11 @@ def generate_queries_to_dir(
     `seed_list` overrides the sequential `[seed_start, seed_start + n_problems)` range with
     explicit problem seeds (e.g. the scattered showcase seeds from `find_showcase_seeds`);
     shard `b` then covers `seed_list[b*problems_per_shard : (b+1)*problems_per_shard]`.
+
+    `max_queries` caps each problem's contribution (ignored under `dep_all_pairs`, where the
+    full dep matrix is the point); `uniform_difficulty` asks for an equal share of problems per
+    reasoning-step count and is not implemented yet, so it raises. Both are recorded in
+    `metadata.json`, so a dataset says which sampling rule produced it.
     """
     from src.probe.build_queries import MAX_SEQ_LEN
 
@@ -227,6 +245,16 @@ def generate_queries_to_dir(
     med_cfg = IGSM_MED if med_cfg is None else med_cfg
     if seed_list is not None:
         n_problems = len(seed_list)
+    if uniform_difficulty:
+        raise NotImplementedError(
+            'uniform difficulty is not implemented yet. Each problem needs a target op that '
+            "reaches iGSM's generator, so the problem is *built* with that many reasoning "
+            'steps -- not rejection-sampled from a seed scan.'
+        )
+    if max_queries is not None and dep_all_pairs:
+        # An all-pairs dataset exists to be mapped back onto the dependency graph; a capped
+        # one would render graphs with most edges simply missing.
+        max_queries = None
     identity = {
         'target': target,
         'split': split,
@@ -236,6 +264,8 @@ def generate_queries_to_dir(
         'max_seq_len': MAX_SEQ_LEN,
         'dep_all_pairs': dep_all_pairs,
         'seed_list': seed_list,
+        'max_queries_per_problem': max_queries,
+        'uniform_difficulty': uniform_difficulty,
         'queries_version': QUERIES_VERSION,
     }
 
@@ -274,7 +304,7 @@ def generate_queries_to_dir(
                 futures.append(
                     pool.submit(
                         _queries_for_seeds, shard_seeds[cursor : cursor + count],
-                        target, split, med_cfg, MAX_SEQ_LEN, dep_all_pairs,
+                        target, split, med_cfg, MAX_SEQ_LEN, dep_all_pairs, max_queries,
                     )
                 )
                 cursor += count

@@ -66,6 +66,7 @@ def queries_for_problem(
     med_cfg: dict[str, Any] | None = None,
     max_seq_len: int = MAX_SEQ_LEN,
     dep_all_pairs: bool = False,
+    max_queries: int | None = None,
 ) -> tuple[list[ProbeQuery], int]:
     """Build the V-probe queries for one regenerated problem; return `(queries, n_skipped)`.
 
@@ -74,12 +75,20 @@ def queries_for_problem(
     `dep_all_pairs` keeps every ordered off-diagonal pair instead of the balanced subsample
     -- the natural distribution used for testing; one-parameter targets ignore it.
 
-    `(seed, split, med_cfg, target)` fixes the result, including `dep`'s seeded negative
-    sampling, so the multiprocess generation in `src.probe.data` stays byte-identical
+    `max_queries` (per-problem cap) is accepted but not implemented yet; it raises.
+
+    `(seed, split, med_cfg, target, max_queries)` fixes the result, including `dep`'s seeded
+    negative sampling, so the multiprocess generation in `src.probe.data` stays byte-identical
     however the seeds are split across workers.
     """
     if target not in QUERY_BUILDERS:
         raise ValueError(f'target must be one of {TARGETS}, got {target!r}')
+    if max_queries is not None:
+        raise NotImplementedError(
+            'per-problem query capping (paper Appendix E: <=10, uniform without replacement) is '
+            'not implemented yet. Sample inside the QUERY_BUILDERS -- dep must subsample '
+            'positives and negatives jointly to stay balanced -- not by truncating the result.'
+        )
     pp = regenerate_problem(seed, split=split, med_cfg=med_cfg)
     return QUERY_BUILDERS[target](pp, seed, max_seq_len, dep_all_pairs)
 
