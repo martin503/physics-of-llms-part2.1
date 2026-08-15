@@ -29,23 +29,23 @@ uv run python -m src.probe.run vprobe --target dep --random-model --data data/pr
 **4. Eval queries.** Disjoint seeds, all ordered pairs, difficulty spread evenly.
 
 ```bash
-uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --uniform-difficulty --n-problems 200 --seed-start 1000000 --workers 8 --out data/probe/vprobe_dep_eval_200
+uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --uniform-difficulty --n-problems 230 --seed-start 1000000 --workers 8 --out data/probe/vprobe_dep_eval_230
 ```
 
 **5. and 6. Evaluate both probes.** Each writes `<run-dir>/test_<dataset>/{predictions.parquet,metrics.json}`.
 
 ```bash
-uv run python -m src.probe.run test --run-dir trained_probes/<pretrained-run> --data data/probe/vprobe_dep_eval_200
+uv run python -m src.probe.run test --run-dir trained_probes/<pretrained-run> --data data/probe/vprobe_dep_eval_230
 ```
 
 ```bash
-uv run python -m src.probe.run test --run-dir trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200
+uv run python -m src.probe.run test --run-dir trained_probes/<random-run> --data data/probe/vprobe_dep_eval_230
 ```
 
 **7. Interactive report.**
 
 ```bash
-uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200 --out visualizations/dep_probe_report.html
+uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_230 --out results/probes/<dep_eval_230>
 ```
 
 `test` reads `--model-path` and `--seed` from each run's own `config.json`, so steps 5–6 take no
@@ -86,7 +86,8 @@ model arguments — the random control's transformer is rebuilt from its recorde
 | `vprobe.py` | The probe: frozen LM + rank-8 embedding delta + linear head at `[END]`; save/load of the trainable parts and the LM they pair with. |
 | `vprobe_train.py` | Training loop: group split, length-bucketed batches, epoch loop, reported metrics. |
 | `evaluate.py` | Test-time evaluation: rebuild a saved probe from its run dir, predict on a held-out offline dataset, save per-query predictions + metrics into the run dir. |
-| `report_dep.py` | Standalone interactive HTML report for `dep(A, B)`: dependency graph of predictions vs ground truth, pretrained/random toggle, confusion matrices. |
+| `report_dep.py` | Builds the `dep(A, B)` report's data (`report_data.js`) and copies the UI beside it; dependency graph of predictions vs ground truth, pretrained/random toggle, confusion matrices. |
+| `report/dep_report.html` | That UI: one static page, edited directly, that reads whatever `report_data.js` sits next to it. |
 | `run.py` | Typer CLI: `gen-data`, `vprobe`, `test`, `report-dep`. |
 
 Test coverage (and the model-dependent code it deliberately skips): [../tests/README.md](../tests/README.md).
@@ -289,69 +290,45 @@ gitignored.
 
 ## Testing a trained probe (dep)
 
-Training's `mcc_val` comes from the probe's *own* dataset: same seed range, and (for dep) the
-artificially balanced 1:1 pair sample. The test pipeline answers the stronger question — fresh
-problems from a **disjoint seed range**, on the **natural pair distribution** (every ordered
-off-diagonal (A, B) pair, ~85–90% negative):
+Commands: TL;DR steps 4–7.
 
-#### 1. eval dataset: all pairs, seeds far above any training range
-```bash
-uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --n-problems 200 --seed-start 1000000 --workers 8 --out data/probe/vprobe_dep_eval_200
-```
-#### 2. evaluate both probes (writes <run-dir>/test_<dataset>/{predictions.parquet,metrics.json})
-```bash
-uv run python -m src.probe.run test --run-dir trained_probes/<pretrained-run> --data data/probe/vprobe_dep_eval_200
-```
-```bash
-uv run python -m src.probe.run test --run-dir trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200
-```
-#### 3. interactive report (problem text + dependency graph + confusion matrices)
-```bash
-uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200 --out visualizations/dep_probe_report.html
-```
+`mcc_val` is split off the probe's own training data — 20% of its problems, so the same seed
+range and the same balance. Command 4 builds a separate dataset instead: disjoint seeds, and all
+valid queries per problem rather than a sample (sizes in the TL;DR). Expect test MCC below
+`mcc_val`.
 
-Sizing: `--dep-all-pairs` keeps every ordered off-diagonal pair — mean 333 per problem (median
-240, max 1,806, over 200 `test`-split problems), so 200 problems ≈ 67k queries.
-`--uniform-difficulty` raises that, since pinning a high op count builds a larger problem.
-`test` is inference-only (no-grad, bf16), far cheaper than training.
+**Random-control caveat:** the control's transformer lives only in the training process and is
+rebuilt from the run's recorded `--seed`. Runs trained before `load_lm` seeded the random init
+cannot be re-paired with theirs, so their test output is only a fresh-random reference.
 
-MCC on the natural distribution punishes false positives much harder than the balanced val
-metric, so expect test MCC below `mcc_val` even for a good probe.
+### Difficulty
 
-**Random-control caveat:** the control's transformer exists only in the training process and is
-rebuilt from the run's recorded `--seed` at test time. That is faithful only for runs trained
-after `load_lm` started seeding the random init; older random runs cannot be re-paired with
-their transformer, so their test output is a fresh-random-model reference.
+The grid is columns = `n_op`, rows = problems at that difficulty, from the dataset's first
+`--n-problems`.
 
-### Difficulty and problem count
+- `--uniform-difficulty` pins each problem's op, cycling `1..max_op`, so every op — and every
+  prefix — fills evenly. Costs ~1.8x. Without it, ops skew low.
+- `--max-op` defaults to 23 (the paper's out-of-distribution range; pretraining used 15). op>15
+  is naturally rare (~10%), so raise it together with `--uniform-difficulty`. Say in any writeup
+  that op 16–23 is **outside the model's training range**: low scores there measure length
+  generalization, not a probe failure.
 
-The report grid is **columns = difficulty (`n_op`), rows = alternative problems** at that
-difficulty, filled from the first `--n-problems` of the dataset. Two knobs control it:
-
-- `--uniform-difficulty` *builds* each problem at a pinned op, cycling `1..max_op` by problem
-  index, so every op — and every prefix of the dataset — gets an equal share. Costs ~1.8x per
-  problem. Without it, `gen-data` takes whatever op the seeds land on, which is skewed low.
-
-  ```bash
-  uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --uniform-difficulty --n-problems 92 --out data/probe/vprobe_dep_showcase
-  ```
-
-- `--max-op` defaults to 23, the paper's out-of-distribution eval range; pretraining used 15.
-  op>15 is rare naturally (~10%), so raise the cap together with `--uniform-difficulty`. State
-  in any writeup that op 16–23 is **outside the model's training range**: low scores there
-  measure length generalization, not a probe failure.
-
-An op-pinned problem is a *different* problem from what that seed yields unpinned, so the op is
-part of a problem's identity. Datasets store it per query (`n_op`) and `report-dep` feeds it
-back into regeneration, erroring out rather than drawing a graph beside another problem's text.
+An op-pinned problem differs from what the seed yields unpinned, so op is part of a problem's
+identity. Datasets record it per query (`n_op`); `report-dep` feeds it back and errors out
+rather than draw a graph beside another problem's text.
 
 ### The report
 
-One self-contained HTML file: a problem's parameters on a circle, each tested pair a directed
-edge A→B ("A depends on B"). Line style = true label (solid: dependency, dashed: none), colour =
-correctness (green right, red wrong, wrong edges also marked ×). True negatives dominate and
-start hidden. Hover a node to isolate its pairs, click to pin; a toggle switches pretrained ↔
-random control; confusion matrices sit below, per problem or over the whole test set.
+`--out` is a directory of two files that must stay together: `index.html` (the UI, copied from
+`src/probe/report/dep_report.html`) and `report_data.js`. Data is a `.js` assignment rather than
+`.json` so the page works opened from disk, where a browser loads a sibling script but refuses
+to `fetch` one. Default: `results/probes/<date>_<time>_dep`, gitignored.
+
+Parameters sit on a circle, each tested pair a directed edge A→B ("A depends on B"). Line style
+= true label (solid: dependency, dashed: none), colour = correctness (green right, red wrong,
+wrong also marked ×). True negatives start hidden. Hover a node to isolate its pairs, click to
+pin; a toggle switches pretrained ↔ random control; confusion matrices below, per problem or
+overall.
 
 ## Known gaps / TODOs
 

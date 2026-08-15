@@ -425,18 +425,25 @@ def report_dep(
             'With --uniform-difficulty, this keeps op counts balanced.',
         ),
     ] = 45,
-    out: Annotated[Path, typer.Option('--out')] = Path('visualizations/dep_probe_report.html'),
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            '--out',
+            help='Report directory, receiving index.html + report_data.js. '
+            'Default: a timestamped results/probes/<date>_<time>_dep.',
+        ),
+    ] = None,
 ) -> None:
     """Render the interactive dep(A, B) report: problem text + dependency-graph view of both
     probes' predictions (needs `test` output for both run dirs on the same dataset)."""
-    from src.probe.report_dep import build_report
+    from src.probe.report_dep import INDEX_NAME, build_report
 
     _setup_logging()
-    build_report(
+    out_dir = build_report(
         pretrained_run=pretrained_run, random_run=random_run, data_dir=data,
         n_problems=n_problems, out=out,
     )
-    typer.echo(f'report written to {out}')
+    typer.echo(f'report written to {out_dir / INDEX_NAME}')
 
 
 if __name__ == '__main__':
