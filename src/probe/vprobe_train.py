@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def _length_bucketed_batches(
-    queries: list[ProbeQuery], indices: np.ndarray, batch_size: int
+    queries: list[ProbeQuery], indices: np.ndarray, batch_size: int, rng: np.random.Generator
 ) -> list[list[ProbeQuery]]:
     """Group queries of similar length into batches, then shuffle the batch order.
 
@@ -44,8 +44,12 @@ def _length_bucketed_batches(
         distinct padded lengths -- the fragmentation that made batch times creep up (1.4s ->
         15s) until the run spilled into system RAM.
     Batch *order* is still shuffled, so the optimiser does not see length-sorted data.
+
+    The pre-shuffle costs nothing and matters: Python's sort is stable, so without it queries of
+    equal length keep their dataset order and one problem's near-identical queries land in the
+    same batch.
     """
-    by_len = sorted(indices, key=lambda i: len(queries[i].input_ids))
+    by_len = sorted(rng.permutation(indices), key=lambda i: len(queries[i].input_ids))
     batches = [
         [queries[i] for i in by_len[s : s + batch_size]] for s in range(0, len(by_len), batch_size)
     ]
@@ -72,7 +76,8 @@ def _evaluate(
     device: str,
     loss_fn: nn.Module | None = None,
 ) -> dict[str, float]:
-    """Accuracy + MCC over `queries` (accuracy for comparability with the paper's Figure 7).
+    """Measure Accuracy & MCC across `queries`
+    (accuracy for comparability with the paper's Figure 7)
 
     `loss_fn`, if given, is also evaluated batch-wise and averaged; used to report a
     val loss comparable to the training loss without running eval twice.
@@ -170,7 +175,7 @@ def train_vprobe(
     for epoch in range(epochs):
         t_epoch = time.perf_counter()
         probe.train()
-        batches = _length_bucketed_batches(train_queries, indices, batch_size)
+        batches = _length_bucketed_batches(train_queries, indices, batch_size, rng)
         rng.shuffle(batches)  # shuffle batch order, keep within-batch lengths homogeneous
         total_loss = 0.0
         n_seen = 0
