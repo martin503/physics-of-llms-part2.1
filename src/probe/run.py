@@ -24,10 +24,12 @@ history), and `probe.pt` (the trainable delta/head only; reload with `vprobe.loa
 
 Testing a trained probe on fresh problems (disjoint seed range; for `dep` use
 `--dep-all-pairs` so every ordered (A, B) pair is present -- the natural distribution the
-graph report needs). Then evaluate each run dir and render the interactive report:
+graph report needs). Add `--uniform-difficulty` for an equal share of problems per op count,
+so the report shows the full difficulty range rather than iGSM's low-op-heavy default. Then
+evaluate each run dir and render the interactive report:
 
-    uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --n-problems 200 \\
-        --seed-start 1000000 --workers 8 --out data/probe/vprobe_dep_eval_200
+    uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --uniform-difficulty \\
+        --n-problems 200 --seed-start 1000000 --workers 8 --out data/probe/vprobe_dep_eval_200
     uv run python -m src.probe.run test --run-dir trained_probes/<pretrained-run> \\
         --data data/probe/vprobe_dep_eval_200
     uv run python -m src.probe.run test --run-dir trained_probes/<random-run> \\
@@ -56,9 +58,8 @@ DEFAULT_RUNS_DIR = Path('trained_probes')
 def _med_cfg_override(max_op: int | None, max_edge: int | None) -> dict[str, Any] | None:
     """Build an iGSM-med config with `max_op`/`max_edge` overridden, or None to use defaults.
 
-    iGSM-med caps difficulty at `max_op=15` (the training range). Raising it lets the
-    generator emit harder out-of-distribution problems (the paper evaluates at op 20-23);
-    n_op is still sampled across `1..max_op`, so op>15 is rare -- scan/generate more.
+    Raising `max_op` only makes harder problems reachable. They stay rare unless paired with
+    `--uniform-difficulty`.
     """
     from src.data.igsm import IGSM_MED
 
@@ -193,96 +194,53 @@ def gen_data(
             '-- the natural test distribution (~85-90%% negative), needed for the graph report.',
         ),
     ] = False,
-    seeds_file: Annotated[
-        Path | None,
-        typer.Option(
-            '--seeds-file',
-            help='JSON from `find-seeds`: generate queries for exactly those problem seeds '
-            '(overrides --n-problems/--seed-start/--split/--max-op/--max-edge).',
-        ),
-    ] = None,
     max_queries: Annotated[
         int | None,
         typer.Option(
             '--max-queries',
-            help='Cap each problem at this many queries, sampled uniformly without replacement '
-            "(the paper's Appendix E rule is 10). Ignored with --dep-all-pairs.",
+            help="Cap each problem at this many queries (default: 10, matches paper's Appendix E), "
+            'sampled uniformly without replacement. Ignored with --dep-all-pairs.',
         ),
-    ] = None,
+    ] = 10,
+    unbalanced: Annotated[
+        bool,
+        typer.Option(
+            '--unbalanced',
+            help='dep only: draw the capped queries uniformly from all ordered (A, B) pairs '
+            'instead of keeping a 1:1 positive/negative split. Gives the natural ~17% positive '
+            'rate, so training then needs --balance-classes.',
+        ),
+    ] = False,
     uniform_difficulty: Annotated[
         bool,
         typer.Option(
             '--uniform-difficulty',
-            help='Equal share of problems per reasoning-step count (op), instead of '
+            help='Equal share of problems per reasoning-step count (op 1..max-op), instead of '
             "iGSM's natural low-op-heavy sampling.",
         ),
     ] = False,
     max_op: Annotated[
         int | None,
-        typer.Option('--max-op', help='Override iGSM-med difficulty cap (default 15). Must match '
-                     'the value the seeds were found under; ignored when --seeds-file is given.'),
-    ] = None,
+        typer.Option('--max-op', help='iGSM difficulty cap. 23 covers the paper\'s '
+                     'out-of-distribution eval range; pretraining used 15.'),
+    ] = 23,
     max_edge: Annotated[
         int | None, typer.Option('--max-edge', help='Override iGSM-med graph-width cap (default 20).')
     ] = None,
 ) -> None:
     """Generate V-probe queries offline (multiprocess, parquet shards + metadata)."""
-    import json as _json
-
     from src.probe.data import generate_queries_to_dir
 
     if dep_all_pairs and target != 'dep':
         raise typer.BadParameter('--dep-all-pairs only applies to --target dep')
-    seed_list = None
-    med_cfg = _med_cfg_override(max_op, max_edge)
-    if seeds_file is not None:
-        showcase = _json.loads(seeds_file.read_text(encoding='utf-8'))
-        seed_list = showcase['seeds']
-        split = showcase['split']  # the seeds are only meaningful under their own split
-        med_cfg = showcase.get('med_cfg', med_cfg)  # regenerate under the config they were found with
+    if unbalanced and target != 'dep':
+        raise typer.BadParameter('--unbalanced only applies to --target dep')
     _setup_logging()
     generate_queries_to_dir(
         out, n_problems, target=target, split=split, seed_start=seed_start, workers=workers,
         problems_per_shard=problems_per_shard, model_path=model_path, overwrite=overwrite,
-        dep_all_pairs=dep_all_pairs, seed_list=seed_list, med_cfg=med_cfg,
-        max_queries=max_queries, uniform_difficulty=uniform_difficulty,
-    )
-
-
-@app.command(name='find-seeds')
-def find_seeds(
-    out: Annotated[Path, typer.Option('--out')] = Path('data/probe/showcase_seeds.json'),
-    per_op: Annotated[
-        int, typer.Option('--per-op', help='Problems to keep per difficulty (op count).')
-    ] = 3,
-    split: Annotated[str, typer.Option('--split')] = 'test',
-    scan_seed: Annotated[
-        int, typer.Option('--scan-seed', help='RNG seed for the (scattered) candidate stream.')
-    ] = 0,
-    max_scan: Annotated[int, typer.Option('--max-scan')] = 2_000,
-    workers: Annotated[int, typer.Option('--workers')] = 8,
-    max_op: Annotated[
-        int | None,
-        typer.Option('--max-op', help='Override iGSM-med difficulty cap (default 15). Raise for '
-                     'harder out-of-distribution problems, e.g. 23 for the paper op-20-23 eval.'),
-    ] = None,
-    max_edge: Annotated[
-        int | None, typer.Option('--max-edge', help='Override iGSM-med graph-width cap (default 20).')
-    ] = None,
-) -> None:
-    """Pick scattered showcase seeds: `--per-op` problems per difficulty (iGSM `n_op`).
-
-    Difficulty runs `1..max_op` (15 by default; raise with `--max-op`). Candidates are drawn
-    randomly from a huge seed range, so the accepted seeds are non-sequential and disjoint
-    from training's sequential ranges. High op counts are rare (~1-2%), so filling their
-    buckets needs a large `--max-scan`. Feed the JSON to `gen-data --seeds-file` (which reads
-    back the same med_cfg)."""
-    from src.probe.data import find_showcase_seeds
-
-    _setup_logging()
-    find_showcase_seeds(
-        out, per_op=per_op, split=split, scan_seed=scan_seed, max_scan=max_scan, workers=workers,
-        med_cfg=_med_cfg_override(max_op, max_edge),
+        dep_all_pairs=dep_all_pairs, med_cfg=_med_cfg_override(max_op, max_edge),
+        max_queries=max_queries, unbalanced=unbalanced, uniform_difficulty=uniform_difficulty,
     )
 
 
@@ -463,8 +421,8 @@ def report_dep(
         int,
         typer.Option(
             '--n-problems',
-            help='Problems to include. Default 45 = the `find-seeds` default set (ops 1-15 x 3 '
-            'seeds); raise it to match a larger --max-op/--per-op scan.',
+            help='Number of Problems to include, taken from the front of the dataset. '
+            'With --uniform-difficulty, this keeps op counts balanced.',
         ),
     ] = 45,
     out: Annotated[Path, typer.Option('--out')] = Path('visualizations/dep_probe_report.html'),

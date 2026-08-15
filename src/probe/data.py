@@ -1,9 +1,8 @@
 """Offline V-probe query datasets: multiprocess generation into parquet shards + metadata.
 
-Building V-probe queries regenerates every iGSM problem (graph, labels, tokens) -- CPU-bound
-work that caps online runs at a few hundred problems and makes the probe overfit. This
-module generates queries *offline* with a process pool (mirroring `src.data.igsm`) and writes
-them as parquet shards, so training can draw on tens of thousands of problems.
+Building V-probe queries regenerates every iGSM problem (graph, labels, tokens) (CPU-bound
+work). This module generates queries offline with a process pool (mirroring `src.data.igsm`)
+and writes them as parquet shards, so training can draw on tens of thousands of problems.
 
 Each dataset directory contains:
 
@@ -14,14 +13,14 @@ Each dataset directory contains:
 Provenance note: V-probe queries are token sequences + graph labels from the iGSM generator
 -- the only model-adjacent piece is the GPT-2 tokenizer, so the queries themselves are
 model-independent. `model_path` is still recorded in metadata.json (when given) to tie a
-dataset to the model it was generated *for*. Cached activations (`extract.py`) are the
+dataset to the model it was generated for. Cached activations (`extract.py`) are the
 genuinely model-tied artifact; those embed the model in their own pipeline.
 
 Sharding is shared with `src.data.igsm` (same shard naming, same atomic-write-then-rename
 protocol): shard `b` covers seeds `[seed_start + b*problems_per_shard, ...)`, which bounds
 peak memory and lets readers stream. Generation is not resumable -- it is cheap enough to
-redo -- but each problem is fully determined by its seed, so any number of workers produces
-the same queries in the same order.
+redo. Each problem is fully determined by its seed and requested op, so any number of
+workers produces the same queries in the same order.
 """
 
 from __future__ import annotations
@@ -34,11 +33,9 @@ import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
-from itertools import repeat, zip_longest
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
@@ -65,9 +62,9 @@ METADATA_NAME = 'metadata.json'
 #      which also renumbers param_a/param_b; queries carry the source problem's `n_op`
 #   3: metadata keys renamed row -> query (`rows_version`/`n_rows` -> `queries_version`/
 #      `n_queries`); the queries themselves are unchanged from 2
-#   4: reserved for query capping + uniform difficulty (both in flight; `identity` records
-#      each setting, so whichever lands first bumps to 4 and the second leaves it there)
-QUERIES_VERSION = 3
+#   4: per-problem query cap (`max_queries_per_problem`, `unbalanced`) and uniform difficulty
+#      (`uniform_difficulty`); `identity` records each setting
+QUERIES_VERSION = 4
 
 
 def git_commit(cwd: Path) -> str | None:
@@ -83,14 +80,21 @@ def git_commit(cwd: Path) -> str | None:
 
 def _queries_for_seeds(
     seeds: list[int],
+    ops: list[int | None],
     target: str,
     split: str,
     med_cfg: dict[str, Any],
     max_seq_len: int,
     dep_all_pairs: bool,
     max_queries: int | None = None,
+    unbalanced: bool = False,
 ) -> tuple[list[list[int]], list[int], list[int], list[int], list[int], list[int], int]:
-    """Worker: build queries for the given seeds as plain columns (picklable)."""
+    """Worker: build the queries of one problem per seed, as plain columns (picklable).
+
+    Returns the columns `(input_ids, labels, groups, param_a, param_b, n_op)`, one entry each
+    per query, plus the number of over-long queries dropped. `ops[i]` asks iGSM to build
+    `seeds[i]` with that many reasoning steps; None lets iGSM choose, which favours low counts.
+    """
     from src.probe.build_queries import queries_for_problem
 
     input_ids: list[list[int]] = []
@@ -100,10 +104,10 @@ def _queries_for_seeds(
     param_b: list[int] = []
     n_op: list[int] = []
     skipped = 0
-    for seed in seeds:
+    for seed, op in zip(seeds, ops, strict=True):
         queries, n_skipped = queries_for_problem(
             seed, target=target, split=split, med_cfg=med_cfg, max_seq_len=max_seq_len,
-            dep_all_pairs=dep_all_pairs, max_queries=max_queries,
+            dep_all_pairs=dep_all_pairs, max_queries=max_queries, unbalanced=unbalanced, op=op,
         )
         skipped += n_skipped
         for q in queries:
@@ -114,92 +118,6 @@ def _queries_for_seeds(
             param_b.append(q.param_b)
             n_op.append(q.n_op)
     return input_ids, labels, groups, param_a, param_b, n_op, skipped
-
-
-def _probe_seed_op(seed: int, split: str, med_cfg: dict[str, Any]) -> tuple[int, int, int]:
-    """Worker: regenerate problem `seed`; return `(seed, n_op, n_param)`."""
-    from src.probe.labels import regenerate_problem
-
-    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg)
-    return seed, int(pp.problem.n_op), len(pp.all_param)
-
-
-def find_showcase_seeds(
-    out: Path | str,
-    *,
-    per_op: int = 3,
-    split: str = 'test',
-    scan_seed: int = 0,
-    seed_lo: int = 1_000_000,
-    max_scan: int = 2_000,
-    workers: int = 8,
-    med_cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Scan scattered (non-sequential) seeds until `per_op` problems exist per op count.
-
-    Candidate seeds are drawn uniformly from `[seed_lo, 2**31)` by an RNG keyed on
-    `scan_seed` -- deterministic, but the accepted seeds look nothing like a range (and
-    `seed_lo` keeps them disjoint from the sequential training ranges near 0). Problem
-    difficulty is iGSM's own `n_op` (operation count; iGSM-med caps at `max_op=15`). High
-    ops are rare (~1-2% of problems), so the scan runs `workers` regenerations in parallel
-    and stops when every op bucket is full or `max_scan` candidates were tried -- unfilled
-    buckets are reported, not fatal.
-
-    Writes `{split, scan_seed, per_op, per_op_seeds: {op: [seed, ...]}, seeds: [...]}` as
-    JSON to `out` (input for `gen-data --seeds-file`) and returns it.
-    """
-    rng = np.random.default_rng(scan_seed)
-    candidates = [int(s) for s in rng.integers(seed_lo, 2**31 - 1, size=max_scan)]
-    med_cfg = IGSM_MED if med_cfg is None else med_cfg
-    wanted_ops = set(range(1, med_cfg.get('max_op', 15) + 1))
-    buckets: dict[int, list[int]] = {}
-    n_scanned = 0
-    chunk = max(workers * 4, 16)
-    with ProcessPoolExecutor(max_workers=workers, initializer=ensure_igsm_submodule) as pool:
-        with tqdm(total=max_scan, desc='scan seeds', unit='prob') as pbar:
-            for lo in range(0, len(candidates), chunk):
-                batch = candidates[lo : lo + chunk]
-                results = pool.map(
-                    _probe_seed_op, batch, repeat(split, len(batch)), repeat(med_cfg, len(batch))
-                )
-                for seed, n_op, _n_param in results:
-                    n_scanned += 1
-                    pbar.update(1)
-                    bucket = buckets.setdefault(n_op, [])
-                    if len(bucket) < per_op:
-                        bucket.append(seed)
-                if all(len(buckets.get(op, [])) >= per_op for op in wanted_ops):
-                    break
-
-    unfilled = {op: len(b) for op, b in sorted(buckets.items()) if len(b) < per_op}
-    if unfilled:
-        print(f'buckets not filled to {per_op} after {n_scanned} scans: {unfilled}')
-    per_op_seeds = {str(op): buckets[op] for op in sorted(buckets)}
-    result = {
-        'kind': 'showcase_seeds',
-        'split': split,
-        'med_cfg': med_cfg,
-        'scan_seed': scan_seed,
-        'per_op': per_op,
-        'n_scanned': n_scanned,
-        'per_op_seeds': per_op_seeds,
-        # Interleaved across ops (op1 seed1, op2 seed2, ... then round again), not concatenated:
-        # `report-dep` embeds the *first* n_problems of the dataset, so an op-grouped list would
-        # show only the easiest few difficulties whenever n_problems < len(seeds).
-        'seeds': [
-            s
-            for group in zip_longest(*per_op_seeds.values())
-            for s in group
-            if s is not None
-        ],
-        'created': datetime.now(UTC).isoformat(timespec='seconds'),
-    }
-    out = Path(out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
-    ops = ', '.join(f'{op}:{len(b)}' for op, b in sorted(buckets.items()))
-    print(f'{sum(len(b) for b in buckets.values())} seeds across ops [{ops}] -> {out}')
-    return result
 
 
 def _write_table_atomic(table: pa.Table, path: Path) -> None:
@@ -222,35 +140,24 @@ def generate_queries_to_dir(
     model_path: str | None = None,
     overwrite: bool = False,
     dep_all_pairs: bool = False,
-    seed_list: list[int] | None = None,
     max_queries: int | None = None,
+    unbalanced: bool = False,
     uniform_difficulty: bool = False,
 ) -> dict[str, Any]:
     """Generate V-probe queries for `n_problems` seeds into `out`; return the metadata dict.
 
     Refuses if `out` already holds a finished dataset, unless `overwrite`.
 
-    `seed_list` overrides the sequential `[seed_start, seed_start + n_problems)` range with
-    explicit problem seeds (e.g. the scattered showcase seeds from `find_showcase_seeds`);
-    shard `b` then covers `seed_list[b*problems_per_shard : (b+1)*problems_per_shard]`.
-
-    `max_queries` caps each problem's contribution (ignored under `dep_all_pairs`, where the
-    full dep matrix is the point); `uniform_difficulty` asks for an equal share of problems per
-    reasoning-step count and is not implemented yet, so it raises. Both are recorded in
-    `metadata.json`, so a dataset says which sampling rule produced it.
+    `max_queries` caps each problem's contribution (ignored under `dep_all_pairs`).
+    `unbalanced` drops `dep`'s 1:1 class balance, sampling random pairs instead.
+    `uniform_difficulty` cycles the requested step count over `1..med_cfg['max_op']` by problem
+    index, so any *prefix* of the dataset is difficulty-balanced too (`report-dep` embeds the
+    first N problems). All three go into `metadata.json`.
     """
     from src.probe.build_queries import MAX_SEQ_LEN
 
     out = Path(out)
     med_cfg = IGSM_MED if med_cfg is None else med_cfg
-    if seed_list is not None:
-        n_problems = len(seed_list)
-    if uniform_difficulty:
-        raise NotImplementedError(
-            'uniform difficulty is not implemented yet. Each problem needs a target op that '
-            "reaches iGSM's generator, so the problem is *built* with that many reasoning "
-            'steps -- not rejection-sampled from a seed scan.'
-        )
     if max_queries is not None and dep_all_pairs:
         # An all-pairs dataset exists to be mapped back onto the dependency graph; a capped
         # one would render graphs with most edges simply missing.
@@ -263,8 +170,8 @@ def generate_queries_to_dir(
         'med_cfg': med_cfg,
         'max_seq_len': MAX_SEQ_LEN,
         'dep_all_pairs': dep_all_pairs,
-        'seed_list': seed_list,
         'max_queries_per_problem': max_queries,
+        'unbalanced': unbalanced,
         'uniform_difficulty': uniform_difficulty,
         'queries_version': QUERIES_VERSION,
     }
@@ -272,7 +179,7 @@ def generate_queries_to_dir(
     if overwrite and out.exists():
         shutil.rmtree(out)
     meta_path = out / METADATA_NAME
-    # `metadata.json` is written only once generation finishes, so this refuses on *complete*
+    # `metadata.json` is written only once generation finishes, so this refuses on complete
     # datasets; an interrupted run leaves shards but no metadata and is simply redone.
     if meta_path.exists():
         raise ValueError(
@@ -283,9 +190,13 @@ def generate_queries_to_dir(
         partial.unlink()
 
     num_shards = math.ceil(n_problems / problems_per_shard) if n_problems > 0 else 0
-    all_seeds = (
-        list(seed_list) if seed_list is not None
-        else list(range(seed_start, seed_start + n_problems))
+    all_seeds = list(range(seed_start, seed_start + n_problems))
+    # Round-robin per problem, so every prefix of the dataset holds an
+    # equal share of each op count (i.e. sorted by op: 1 2 3 1 2 3 ...)
+    ops = list(range(1, med_cfg.get('max_op', 15) + 1))
+    all_ops: list[int | None] = (
+        [ops[i % len(ops)] for i in range(n_problems)] if uniform_difficulty
+        else [None] * n_problems
     )
     pbar = tqdm(
         total=n_problems, desc=f'gen vprobe-{target} queries', unit='prob', dynamic_ncols=True
@@ -293,6 +204,7 @@ def generate_queries_to_dir(
     with ProcessPoolExecutor(max_workers=workers, initializer=ensure_igsm_submodule) as pool:
         for b in range(num_shards):
             shard_seeds = all_seeds[b * problems_per_shard : (b + 1) * problems_per_shard]
+            shard_ops = all_ops[b * problems_per_shard : (b + 1) * problems_per_shard]
             # Contiguous seed sub-slices; each seed is independent. Many small units rather
             # than one per worker, so the pool rebalances iGSM's heavy-tailed generation
             # (see `_unit_counts`). Units are submitted and collected in order, so queries land
@@ -304,7 +216,9 @@ def generate_queries_to_dir(
                 futures.append(
                     pool.submit(
                         _queries_for_seeds, shard_seeds[cursor : cursor + count],
+                        shard_ops[cursor : cursor + count],
                         target, split, med_cfg, MAX_SEQ_LEN, dep_all_pairs, max_queries,
+                        unbalanced,
                     )
                 )
                 cursor += count

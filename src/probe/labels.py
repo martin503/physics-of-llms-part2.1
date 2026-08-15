@@ -208,12 +208,15 @@ def regenerate_problem(
     split: str = 'test',
     med_cfg: dict[str, Any] | None = None,
     keys: tuple[str, ...] = LABEL_KEYS,
+    op: int | None = None,
 ) -> ProbeProblem:
-    """Regenerate one iGSM problem for `seed` and extract its probe labels.
+    """Regenerate one iGSM problem of given `op` for `seed` and extract its probe labels.
 
     Mirrors `src.data.igsm._generate_chunk` (fix_seed -> fresh IdGen -> gen_prob) so the
-    same `(seed, split)` reproduces the same problem deterministically. Probe on the
+    same `(seed, split, op)` reproduces the same problem deterministically. Probe on the
     `test` split by default (bins 16-22) -- these problems were held out of training.
+
+    If `op` is not specified, iGSM may generate any problem difficulty using the given seed.
 
     Candidates are :func:`named_params`, and every label array is narrowed to them, so
     `all_param`, `labels`, `nece` and `dep()` share one indexing -- the one a row's
@@ -223,7 +226,11 @@ def regenerate_problem(
     from tools.tools import fix_seed  # type: ignore[import-not-found]
 
     fix_seed(seed)
-    gen = _new_idgen(med_cfg)
+    cfg = IGSM_MED if med_cfg is None else med_cfg
+    if op is not None:
+        # max_op must be >= op for the target to be reachable (see src.data.igsm._generate_chunk)
+        cfg = {**cfg, 'op': op, 'max_op': max(cfg.get('max_op', 0), op)}
+    gen = _new_idgen(cfg)
     gen.gen_prob(get_bins(split), p_format='pq')
     problem = gen.problem
 

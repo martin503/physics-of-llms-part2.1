@@ -18,8 +18,12 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-from src.data.igsm import _shard_path
+from src.data.igsm import EOS, _shard_path
 from src.probe.data import SHARD_GLOB, generate_queries_to_dir, load_vprobe_queries
+from src.probe.labels import regenerate_problem
+
+# Small enough that op pinning stays cheap: 4 op buckets instead of the default 15.
+MED_4 = dict(max_op=4, max_edge=20, perm_level=5, detail_level=0)
 
 
 def test_module_imports():
@@ -86,6 +90,58 @@ def test_each_shard_holds_mixed_difficulties(tmp_path):
                            table.column('n_op').to_pylist(), strict=True))
         assert min(by_seed.values()) >= 1  # a real op count, not the -1 default
         assert len(set(by_seed.values())) > 1, f'shard {b} holds one difficulty: {by_seed}'
+
+
+@pytest.mark.slow
+def test_uniform_difficulty_balances_every_prefix(tmp_path):
+    """Ops cycle per problem, so any *prefix* of the dataset is difficulty-balanced.
+
+    `report-dep` embeds the first N problems, so a merely dataset-wide equal share is not
+    enough. Op counts are read from the `n_op` column, which therefore also pins that the
+    recorded step count equals the op the problem was built at.
+    """
+    out = tmp_path / 'uniform'
+    generate_queries_to_dir(out, 8, target='nece', split='test', workers=2,
+                            problems_per_shard=3, med_cfg=MED_4, max_queries=None,
+                            uniform_difficulty=True)
+
+    queries, meta = load_vprobe_queries(out)
+    assert meta['uniform_difficulty'] is True
+    by_seed: dict[int, int] = {}
+    for q in queries:
+        by_seed.setdefault(q.group, q.n_op)
+        assert q.n_op == by_seed[q.group]  # one difficulty per problem
+    ops = list(by_seed.values())  # dataset order
+    assert ops == [1, 2, 3, 4, 1, 2, 3, 4]
+    for k in range(1, len(ops) + 1):
+        counts = [ops[:k].count(op) for op in (1, 2, 3, 4)]
+        assert max(counts) - min(counts) <= 1, f'prefix of {k} problems is skewed: {ops[:k]}'
+
+
+@pytest.mark.slow
+def test_recorded_op_reproduces_the_dataset_problem(tmp_path):
+    """Regenerating with the recorded op gives back the problem the queries were built from.
+
+    `report_dep` redraws each problem from `(seed, op)` to label its graph; without the op it
+    gets a *different* problem and the graph stops matching the predictions.
+    """
+    out = tmp_path / 'uniform'
+    generate_queries_to_dir(out, 4, target='nece', split='test', workers=2,
+                            problems_per_shard=4, med_cfg=MED_4, max_queries=None,
+                            uniform_difficulty=True)
+
+    queries, _meta = load_vprobe_queries(out)
+    first: dict[int, object] = {}
+    for q in queries:
+        first.setdefault(q.group, q)
+    differs = []
+    for seed, q in first.items():
+        pinned = regenerate_problem(seed, split='test', med_cfg=MED_4, op=q.n_op)
+        prefix = [EOS, *pinned.token_id[: pinned.sol_bos_index]]  # nece layout, before [START]
+        assert q.input_ids[: len(prefix)] == prefix, f'seed {seed} regenerates differently'
+        unpinned = regenerate_problem(seed, split='test', med_cfg=MED_4)
+        differs.append(unpinned.token_id != pinned.token_id)
+    assert any(differs), 'op pinning changed no problem -- the test cannot detect a missing op'
 
 
 @pytest.mark.slow

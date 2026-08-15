@@ -91,10 +91,17 @@ dep(A,B):  [EOS] <problem tokens, no ques.> [START] <desc(A)> [MID] <desc(B)> [E
 never-occurring row toward a single "never the next token" vector (norm 1.151 vs 1.5–2.9 for
 the markers), so the rank-8 delta exists to give the markers usable representations.
 
+**Query sampling:** a problem's queries are highly correlated, so `--max-queries` (default 10,
+the paper's Appendix E rule) caps each problem's contribution, drawn uniformly without
+replacement. `nece` samples parameters directly; `dep` splits the budget evenly between positive
+and negative pairs.
+
 **dep balancing:** the pair matrix is `n_param × n_param` and ~83% negative, so per problem we
-keep all positive pairs and subsample an equal number of negatives (seeded by the problem seed →
-deterministic). The dataset is ~50/50 by construction, so `--balance-classes` is *not* needed
-and `acc_majority ≈ 0.5`.
+take equally many positive and negative pairs (seeded by the problem seed → deterministic). The
+dataset is ~50/50 by construction, so `--balance-classes` is *not* needed and
+`acc_majority ≈ 0.5`. A positive-poor problem yields fewer than 10 queries rather than filling
+the budget with negatives — a deliberate deviation from the paper, which draws pairs uniformly.
+`--unbalanced` is that paper-literal rule, and then `--balance-classes` *is* needed.
 
 **Trainables:** linear head + `delta_a (V×8, zero-init) @ delta_b (8×d, N(0,0.02))`. The LM
 stays frozen and in eval mode; zero-init `delta_a` makes step 0 exactly the pretrained model.
@@ -130,6 +137,22 @@ and the desktop hangs. Mitigations, all on by default:
 Measured after fixes: **peak 3.56 GiB**, flat batch times, no spill. `peak_vram_gib` is in
 every run's metrics — watch it. If you OOM, lower `--batch-size` first; don't raise
 `--vram-fraction` above ~0.9.
+
+**Length bucketing vs. batch diversity.** Sorting by length trades away batch independence:
+a problem's queries are near-equal in length, so a *stable* sort keeps them adjacent and one
+problem can fill a batch. Shuffling the indices before the sort breaks those ties at no
+padding cost. Measured at 300 problems × the 10-query cap, batch size 8
+(`scripts/debug/batch_composition.py`):
+
+| strategy | distinct problems / batch | padded tokens / batch | padding waste |
+|---|---|---|---|
+| no bucketing | 7.93 | 790 | 21.5% |
+| stable sort | 5.12 | 620 | 0.1% |
+| pre-shuffled (used) | 7.41 | 620 | 0.1% |
+
+Bucketing costs almost nothing in diversity once the pre-shuffle is there, and saves ~21% of
+every batch's tokens. The gap widens with queries per problem — pass a larger second argument
+to the script to see the uncapped regime, where the stable sort collapses to ~1.9.
 
 ## Metrics
 
@@ -244,31 +267,27 @@ per query than training.
 The report grid is **columns = difficulty (`n_op`), rows = alternative problems** at that
 difficulty. Two knobs control how it fills:
 
-- **More problems per difficulty (more rows):** the sequential `gen-data --n-problems N` route
-  above takes whatever `n_op` the seeds happen to land on (skewed low). For an evenly filled
-  grid use `find-seeds` instead — it scans scattered seeds and keeps `--per-op` of *each* op
-  count, then `gen-data --seeds-file` regenerates exactly those. `report-dep --n-problems`
-  caps how many of the dataset's problems are embedded (sorted by difficulty).
+- **An evenly filled grid:** plain `gen-data --n-problems N` takes whatever `n_op` the seeds land
+  on, which is skewed low. `--uniform-difficulty` instead *builds* each problem at a pinned op,
+  cycling `1..max_op` by problem index, so every op gets an equal share and so does any prefix —
+  which is what `report-dep --n-problems` embeds. Costs ~1.8x per problem in generation.
 
   ```bash
-  uv run python -m src.probe.run find-seeds --per-op 4 --out data/probe/showcase_seeds.json
-  uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --seeds-file data/probe/showcase_seeds.json --out data/probe/vprobe_dep_showcase
+  uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --uniform-difficulty --n-problems 92 --out data/probe/vprobe_dep_showcase
   ```
 
-- **Harder difficulties (op 16–23):** iGSM-med caps at `max_op=15` (the training range). Raise
-  it with `--max-op` to emit the paper's out-of-distribution eval difficulties (op 20–23). `n_op`
-  is still sampled across `1..max_op`, so high ops are rare (~1–2%) — give `find-seeds` a large
-  `--max-scan`. The chosen `max_op`/`max_edge` are stored in the seeds JSON's `med_cfg`, and
-  `gen-data --seeds-file` reads them back (and records them in the dataset metadata, so the report
-  regenerates each problem's text under the same config):
-
-  ```bash
-  uv run python -m src.probe.run find-seeds --per-op 3 --max-op 23 --max-scan 20000 --out data/probe/hard_seeds.json
-  uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --seeds-file data/probe/hard_seeds.json --out data/probe/vprobe_dep_hard
-  ```
+- **Harder difficulties (op 16–23):** `--max-op` defaults to 23, covering the paper's
+  out-of-distribution eval range; pretraining used 15. Under the natural distribution op>15 stays
+  rare (~10% of problems, and op 23 may not appear at all), so pair the raised cap with
+  `--uniform-difficulty` to actually get those problems.
 
   A caveat worth stating in any writeup: op 16–23 is **outside the model's training range**, so
   low scores there measure length/complexity generalization, not a probe failure.
+
+  An op-pinned problem is a *different* problem from the one that seed yields unpinned, so the
+  op is part of a problem's identity. The dataset stores it per query (`n_op`), and `report-dep`
+  feeds it back into regeneration — it errors out rather than draw a graph beside text from a
+  different problem.
 
 The report is a single self-contained HTML file: each problem's parameters on a circle, each
 tested pair as a directed edge A→B ("A depends on B"). Line style = true label (solid:

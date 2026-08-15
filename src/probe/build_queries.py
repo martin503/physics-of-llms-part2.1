@@ -38,6 +38,17 @@ START, MID, END = 225, 227, 226
 
 MAX_SEQ_LEN = 1024  # queries longer than this are dropped (iGSM-med problems are far shorter)
 
+# One RNG stream per target/mode, so the same problem seed draws independent candidate sets for
+# `nece`, balanced `dep` and unbalanced `dep` instead of three correlated ones.
+_STREAM_NECE, _STREAM_DEP, _STREAM_DEP_UNBALANCED = 0, 1, 2
+
+
+def _sample(candidates: np.ndarray, k: int | None, rng: np.random.Generator) -> np.ndarray:
+    """`k` candidates drawn uniformly without replacement; all of them if `k` is None or too big"""
+    if k is None or k >= len(candidates):
+        return candidates
+    return candidates[rng.choice(len(candidates), size=k, replace=False)]
+
 
 @dataclass
 class ProbeQuery:
@@ -67,60 +78,65 @@ def queries_for_problem(
     max_seq_len: int = MAX_SEQ_LEN,
     dep_all_pairs: bool = False,
     max_queries: int | None = None,
+    unbalanced: bool = False,
+    op: int | None = None,
 ) -> tuple[list[ProbeQuery], int]:
     """Build the V-probe queries for one regenerated problem; return `(queries, n_skipped)`.
 
     Targets share the candidate parameters (`labels.named_params`) and differ only in their
     builder (:data:`QUERY_BUILDERS`), which owns the input layout and read position.
-    `dep_all_pairs` keeps every ordered off-diagonal pair instead of the balanced subsample
-    -- the natural distribution used for testing; one-parameter targets ignore it.
 
-    `max_queries` (per-problem cap) is accepted but not implemented yet; it raises.
+    `max_queries` caps how many queries this problem contributes, each builder sampling over
+    its own candidates. `dep_all_pairs` and `unbalanced` are `dep` options (see its builder);
+    `op` asks for a problem of that many reasoning steps.
 
-    `(seed, split, med_cfg, target, max_queries)` fixes the result, including `dep`'s seeded
-    negative sampling, so the multiprocess generation in `src.probe.data` stays byte-identical
-    however the seeds are split across workers.
+    Every argument feeds the seeded sampling, so `src.probe.data` produces byte-identical
+    output however the seeds are split across workers.
     """
     if target not in QUERY_BUILDERS:
         raise ValueError(f'target must be one of {TARGETS}, got {target!r}')
-    if max_queries is not None:
-        raise NotImplementedError(
-            'per-problem query capping (paper Appendix E: <=10, uniform without replacement) is '
-            'not implemented yet. Sample inside the QUERY_BUILDERS -- dep must subsample '
-            'positives and negatives jointly to stay balanced -- not by truncating the result.'
-        )
-    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg)
-    return QUERY_BUILDERS[target](pp, seed, max_seq_len, dep_all_pairs)
+    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg, op=op)
+    return QUERY_BUILDERS[target](pp, seed, max_seq_len, dep_all_pairs, max_queries, unbalanced)
 
 
 def _nece_queries_for_problem(
-    pp: ProbeProblem, seed: int, max_seq_len: int, all_pairs: bool = False
+    pp: ProbeProblem,
+    seed: int,
+    max_seq_len: int,
+    all_pairs: bool = False,
+    max_queries: int | None = None,
+    unbalanced: bool = False,
 ) -> tuple[list[ProbeQuery], int]:
     """`nece(A)` queries: one per candidate parameter, read at the end of the question.
 
     Reached through `queries_for_problem(target='nece')`, which supplies `pp`.
 
     The prefix is the full problem+question (everything before the [223] solution marker),
-    preceded by EOS -- matching pretraining, where every problem is preceded by the previous
-    one's EOS. The parameter description comes from iGSM's own `Problem.get_param` (the same
-    "each X's Y" phrasing used in problem sentences) and is wrapped in [START]/[END].
-    `all_pairs` is a pairwise-target option and does nothing for a one-parameter query.
+    preceded by EOS, matching pretraining where every problem follows the previous one's EOS.
+    The parameter description comes from iGSM's own `Problem.get_param` (the same "each X's Y"
+    phrasing used in problem sentences) and is wrapped in [START]/[END].
+
+    `max_queries` keeps that many parameters, drawn uniformly and without class stratification.
+    That leaves the natural ~20% positive rate, which `--balance-classes` handles at training
+    time. `all_pairs` and `unbalanced` are pairwise-target options and do nothing here.
     """
     ensure_igsm_submodule()
     from tools.tools import tokenizer  # iGSM's GPT-2 tokenizer
 
     prefix = [EOS, *pp.token_id[: pp.sol_bos_index]]  # [EOS] [222] problem+question
+    rng = np.random.default_rng([seed, _STREAM_NECE])
+    chosen_params = _sample(np.arange(len(pp.all_param)), max_queries, rng)
     queries: list[ProbeQuery] = []
     skipped = 0
-    for p_idx, param in enumerate(pp.all_param):
-        desc = tokenizer.encode(' ' + pp.problem.get_param(param))
+    for p_idx in chosen_params:
+        desc = tokenizer.encode(' ' + pp.problem.get_param(pp.all_param[p_idx]))
         input_ids = [*prefix, START, *desc, END]
         if len(input_ids) > max_seq_len:
             skipped += 1  # guardrail: one pathological query must not set the batch's memory
             continue
         queries.append(
             ProbeQuery(
-                input_ids=input_ids, label=int(pp.nece[p_idx]), group=seed, param_a=p_idx,
+                input_ids=input_ids, label=int(pp.nece[p_idx]), group=seed, param_a=int(p_idx),
                 n_op=pp.problem.n_op,
             )
         )
@@ -128,7 +144,12 @@ def _nece_queries_for_problem(
 
 
 def _dep_queries_for_problem(
-    pp: ProbeProblem, seed: int, max_seq_len: int, all_pairs: bool = False
+    pp: ProbeProblem,
+    seed: int,
+    max_seq_len: int,
+    all_pairs: bool = False,
+    max_queries: int | None = None,
+    unbalanced: bool = False,
 ) -> tuple[list[ProbeQuery], int]:
     """`dep(A, B)` queries: balanced (A, B) pairs, read at the end of the problem description.
 
@@ -142,15 +163,17 @@ def _dep_queries_for_problem(
 
     Label = `dep(A, B)` = "does A (recursively) depend on B" = `pp.dep()[a, b]`.
 
-    Pair selection (the `--target dep` universe): the full dep matrix is `n_param x n_param`, so we
-    keep **all** positive pairs and sample an **equal** number of negatives (both off-diagonal),
-    giving a per-problem-balanced dataset. Sampling is seeded from the problem `seed`, so offline
-    generation stays deterministic. Unlike `nece`, no `--balance-classes` is needed:
-    the classes are ~50/50 by construction (the paper's natural dep distribution is ~83% negative).
+    Pair selection: equally many positive and negative off-diagonal pairs, `max_queries // 2`
+    of each when capped. The result is ~50/50, so `--balance-classes` is not needed. Splitting
+    the budget deviates from the paper deliberately: a problem with 3 positives yields 3+3, not
+    3+7. `unbalanced=True` is the paper's rule, drawing pairs uniformly at the natural ~17%
+    positive rate, and then `--balance-classes` is needed.
 
-    `all_pairs=True` skips the subsampling and keeps every ordered off-diagonal pair -- the
-    natural (heavily negative) distribution. Use it for *test* datasets, where predictions are
-    mapped back onto the full dependency graph; training on it would need class re-weighting.
+    `all_pairs=True` keeps every ordered off-diagonal pair and ignores the cap. Use it for
+    *test* datasets, where predictions are mapped back onto the full dependency graph.
+
+    Sampling and emission order are seeded from `seed`, so generation is reproducible and a
+    problem's queries reach the batcher label-mixed.
     """
     ensure_igsm_submodule()
     from tools.tools import tokenizer  # iGSM's GPT-2 tokenizer
@@ -159,39 +182,47 @@ def _dep_queries_for_problem(
     dep = pp.dep()  # (n_param, n_param); dep[a, b] == 1 iff param a depends on param b
     n = len(pp.all_param)
     off_diag = ~np.eye(n, dtype=bool)  # a param never "depends on itself" (dep diagonal is 0)
-    pos = np.argwhere((dep == 1) & off_diag)
-    neg = np.argwhere((dep == 0) & off_diag)
-
-    if not all_pairs:
-        rng = np.random.default_rng(seed)  # per-problem: keeps offline generation reproducible
-        n_neg = min(len(pos), len(neg))  # balance 1:1; keep all positives, subsample negatives
-        if len(neg) > n_neg:
-            neg = neg[rng.choice(len(neg), size=n_neg, replace=False)]
+    # per-problem: keeps offline generation reproducible
+    rng = np.random.default_rng([seed, _STREAM_DEP_UNBALANCED if unbalanced else _STREAM_DEP])
+    if all_pairs:
+        pairs = np.argwhere(off_diag)
+    elif unbalanced:
+        pairs = _sample(np.argwhere(off_diag), max_queries, rng)
+    else:
+        pos = np.argwhere((dep == 1) & off_diag)
+        neg = np.argwhere((dep == 0) & off_diag)
+        n_each = min(len(pos), len(neg))
+        if max_queries is not None:
+            n_each = min(n_each, max_queries // 2)
+        pairs = np.concatenate([_sample(pos, n_each, rng), _sample(neg, n_each, rng)])
+    rng.shuffle(pairs)  # so a problem's queries do not reach the batcher as one label at a time
 
     # get_param is not free, so encode each parameter's description once (n_param is small)
     desc_ids = [tokenizer.encode(' ' + pp.problem.get_param(param)) for param in pp.all_param]
 
     queries: list[ProbeQuery] = []
     skipped = 0
-    for pairs, label in ((pos, 1), (neg, 0)):
-        for a, b in pairs:
-            input_ids = [*prefix, START, *desc_ids[a], MID, *desc_ids[b], END]
-            if len(input_ids) > max_seq_len:
-                skipped += 1  # guardrail: one pathological query must not set the batch's memory
-                continue
-            queries.append(
-                ProbeQuery(
-                    input_ids=input_ids, label=label, group=seed,
-                    param_a=int(a), param_b=int(b), n_op=pp.problem.n_op,
-                )
+    for a, b in pairs:
+        input_ids = [*prefix, START, *desc_ids[a], MID, *desc_ids[b], END]
+        if len(input_ids) > max_seq_len:
+            skipped += 1  # guardrail: one pathological query must not set the batch's memory
+            continue
+        queries.append(
+            ProbeQuery(
+                input_ids=input_ids, label=int(dep[a, b]), group=seed,
+                param_a=int(a), param_b=int(b), n_op=pp.problem.n_op,
             )
+        )
     return queries, skipped
 
 
 # Probe tasks, each mapped to the builder turning one problem into its queries. Builders share
-# the signature `(pp, seed, max_seq_len, all_pairs)`, so dispatch needs no per-target
-# branching and each owns its own read position. A new probe is one entry plus its builder.
-QUERY_BUILDERS: dict[str, Callable[[ProbeProblem, int, int, bool], tuple[list[ProbeQuery], int]]] = {
+# the signature `(pp, seed, max_seq_len, all_pairs, max_queries, unbalanced)`, so dispatch needs
+# no per-target branching and each owns its own read position and its own sampling of the capped
+# query set. A new probe is one entry plus its builder.
+QUERY_BUILDERS: dict[
+    str, Callable[[ProbeProblem, int, int, bool, int | None, bool], tuple[list[ProbeQuery], int]]
+] = {
     'nece': _nece_queries_for_problem,
     'dep': _dep_queries_for_problem,
 }
@@ -205,17 +236,21 @@ def build_vprobe_queries(
     split: str = 'test',
     seed_start: int = 0,
     dep_all_pairs: bool = False,
+    max_queries: int | None = 10,
+    unbalanced: bool = False,
 ) -> list[ProbeQuery]:
     """Build V-probe queries over `n_problems` problems, in-process (see `queries_for_problem`).
 
     Convenient for small runs; for the query counts that actually avoid overfitting,
     generate offline with `python -m src.probe.run gen-data` and pass `--data` instead.
+    `max_queries` defaults to the same per-problem cap as `gen-data`, so the two paths agree.
     """
     queries: list[ProbeQuery] = []
     skipped = 0
     for seed in tqdm(range(seed_start, seed_start + n_problems), desc='build queries', unit='prob'):
         problem_queries, n_skipped = queries_for_problem(
-            seed, target=target, split=split, dep_all_pairs=dep_all_pairs
+            seed, target=target, split=split, dep_all_pairs=dep_all_pairs,
+            max_queries=max_queries, unbalanced=unbalanced,
         )
         queries.extend(problem_queries)
         skipped += n_skipped

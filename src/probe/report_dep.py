@@ -23,13 +23,13 @@ parameters necessary for the answer.
 Interactions: hover a node to isolate its pairs; **click** fills the query slots -- first
 click sets A (its mentions highlight in the problem text), second click sets B, matching
 the probe's ``[START] A [MID] B [END]`` input. A grid of radio buttons selects the problem
-(columns = difficulty as iGSM ``n_op``, rows = alternative seeds -- generate the dataset
-from ``find-seeds`` output to populate the grid). Confusion matrices (per problem or whole
-test set) and an n x n dependency-matrix view sit below the graph.
+(columns = difficulty as iGSM ``n_op``, rows = alternative seeds -- generate the dataset with
+``gen-data --uniform-difficulty`` to populate the grid). Confusion matrices (per problem or
+whole test set) and an n x n dependency-matrix view sit below the graph.
 
 Data comes from the ``test`` command's saved predictions for *both* runs (pretrained +
 random control) on the *same* ``--dep-all-pairs`` dataset. Problems are regenerated from
-their seeds for text and parameter names -- predictions are never recomputed here.
+their seed and requested op for text and parameter names. Predictions are never recomputed here.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow.parquet as pq
 
 from src.probe.evaluate import classification_metrics, load_predictions
 
@@ -61,18 +62,44 @@ def _short_name(problem: Any, param: tuple[int, int, int, int]) -> str:
     return f'{owner}{"→" if kind == 0 else "⇒"}{attr}'
 
 
+def _n_op_by_seed(data_dir: Path) -> dict[int, int]:
+    """Map problem seed (`group`) -> reasoning-step count, from the dataset's own shards.
+
+    `n_op` is constant within a group, so the last value per group wins.
+    """
+    from src.probe.data import SHARD_GLOB
+
+    n_op: dict[int, int] = {}
+    for shard in sorted(data_dir.glob(SHARD_GLOB)):
+        table = pq.read_table(str(shard), columns=['group', 'n_op'])
+        n_op.update(zip(table.column('group').to_pylist(), table.column('n_op').to_pylist()))
+    return n_op
+
+
 def _problem_payload(
     seed: int,
     split: str,
     med_cfg: dict[str, Any] | None,
     edges: list[list[float]],
+    n_op: int,
+    op: int | None,
 ) -> dict[str, Any]:
-    """Regenerate problem `seed` and package text + parameter names + its edge list."""
+    """Regenerate problem `seed` and package text + parameter names + its edge list.
+
+    Requires `op` to match the value the dataset requested for this problem (None if it
+    requested none). `n_op` is the recorded step count, checked against the regenerated one.
+    """
     from src.probe.labels import regenerate_problem
 
     # the edge list addresses parameters by their index in pp.all_param
-    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg)
+    pp = regenerate_problem(seed, split=split, med_cfg=med_cfg, op=op)
     problem = pp.problem
+    if int(problem.n_op) != n_op:
+        raise ValueError(
+            f'problem {seed} regenerates with n_op={problem.n_op} but the dataset recorded '
+            f'{n_op}. The graph would not match the predictions. Check that metadata.json '
+            f'(uniform_difficulty, med_cfg) matches how the dataset was generated.'
+        )
     nece = pp.nece
     params = [
         {
@@ -132,6 +159,10 @@ def build_report(
 
     meta = json.loads((data_dir / 'metadata.json').read_text(encoding='utf-8'))
     split, med_cfg = meta.get('split', 'test'), meta.get('med_cfg')
+    # A problem only comes back the same when the same op request goes in. Datasets generated
+    # without a requested op must be regenerated without one, even at the observed n_op.
+    n_op_by_seed = _n_op_by_seed(data_dir)
+    request_op = bool(meta.get('uniform_difficulty'))
     if not meta.get('dep_all_pairs'):
         logger.warning(
             '%s was generated without --dep-all-pairs: the graph will only show the '
@@ -163,7 +194,10 @@ def build_report(
                 pre['pred'][m], pre['p1'][m], rnd['pred'][m], rnd['p1'][m], strict=True,
             )
         ]
-        problems.append(_problem_payload(int(seed), split, med_cfg, edges))
+        n_op = int(n_op_by_seed[int(seed)])
+        problems.append(
+            _problem_payload(int(seed), split, med_cfg, edges, n_op, n_op if request_op else None)
+        )
         logger.info(
             'problem %d: op=%d, %d params, %d pairs',
             seed, problems[-1]['nOp'], len(problems[-1]['params']), len(edges),
