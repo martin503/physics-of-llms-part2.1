@@ -1,24 +1,93 @@
-# Probing the iGSM model: linear probes & V-probes
+# Probing the iGSM model: V-probes
 
-Reference for `src/probe/`. For the conceptual version, see
-[probe_guide_beginner.md](probe_guide_beginner.md). Reproduces the probing methodology of
-*Physics of LMs Part 2.1* (https://dx.doi.org/10.2139/ssrn.5250629), §4.1, against our
-GPT2-12-12+RoPE trained on iGSM-med.
+Reference for `src/probe/`. Reproduces the probing methodology of *Physics of LMs Part 2.1*
+(https://dx.doi.org/10.2139/ssrn.5250629), §4.1, against our GPT2-12-12+RoPE trained on iGSM-med.
+
+## TL;DR: the `dep(A, B)` pipeline
+
+Seven commands, start to finish. Training draws problem seeds `0..19999`; the eval set starts at
+1,000,000, so the two ranges don't overlap. Nothing checks this for you.
+
+**1. Training queries.** ~2.5 min on 8 workers; 9.91 queries/problem, so ~198k.
+
+```bash
+uv run python -m src.probe.run gen-data --target dep --n-problems 20000 --seed-start 0 --workers 8 --out data/probe/vprobe_dep_train_20k
+```
+
+**2. Train on the pretrained model.**
+
+```bash
+uv run python -m src.probe.run vprobe --target dep --model-path models/gpt2-igsm-med --data data/probe/vprobe_dep_train_20k --epochs 1 --batch-size 64 --no-grad-checkpointing --seed 872650
+```
+
+**3. Train the random-init control.** Same data and same `--seed`, so the split is identical.
+
+```bash
+uv run python -m src.probe.run vprobe --target dep --random-model --data data/probe/vprobe_dep_train_20k --epochs 1 --batch-size 64 --no-grad-checkpointing --seed 872650
+```
+
+**4. Eval queries.** Disjoint seeds, all ordered pairs, difficulty spread evenly.
+
+```bash
+uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --uniform-difficulty --n-problems 200 --seed-start 1000000 --workers 8 --out data/probe/vprobe_dep_eval_200
+```
+
+**5. and 6. Evaluate both probes.** Each writes `<run-dir>/test_<dataset>/{predictions.parquet,metrics.json}`.
+
+```bash
+uv run python -m src.probe.run test --run-dir trained_probes/<pretrained-run> --data data/probe/vprobe_dep_eval_200
+```
+
+```bash
+uv run python -m src.probe.run test --run-dir trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200
+```
+
+**7. Interactive report.**
+
+```bash
+uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200 --out visualizations/dep_probe_report.html
+```
+
+`test` reads `--model-path` and `--seed` from each run's own `config.json`, so steps 5–6 take no
+model arguments — the random control's transformer is rebuilt from its recorded seed.
+
+### Why these settings
+
+| flag | value | reason |
+|---|---|---|
+| `--epochs` | 1 | every query seen exactly once; buy signal with more problems, not more passes |
+| `--batch-size` | 64 | ~2,480 steps/epoch at 20k problems; larger starves the run of steps |
+| `--no-grad-checkpointing` | off | checkpointing costs ~30% compute for memory a ≥40 GB GPU doesn't need. On a small card, drop the flag and lower `--batch-size` instead |
+| `--vram-fraction` | 0.85 (default) | fraction of the card's **total**. On a shared card, change it to your actual budget |
+| `--balance-classes` | omitted | dep's balanced sampling is already ~50/50 |
+| `--model-path` on `gen-data` | omitted | recorded in `metadata.json` and never read back; queries are token ids, model-independent, and the same dataset feeds both probes |
+
+### Sizing
+
+`train queries ≈ n_problems × 9.91 × 0.8` (the other 20% of *problems* go to val). Measured over
+300 problems on the `test` split: mean 9.91 queries/problem (min 6, max 10), positive rate 0.500.
+
+| `--n-problems` | queries | train | val | steps/epoch @ 64 |
+|---|---|---|---|---|
+| 500 | ~4,955 | 3,964 | 991 | 62 |
+| 5,000 | ~49,550 | 39,640 | 9,910 | 620 |
+| 20,000 | ~198,200 | 158,560 | 39,640 | 2,478 |
+
+`--dep-all-pairs` is a different scale entirely — mean 333 queries/problem (median 240, max
+1,806), positive rate 0.200. It is for eval only.
 
 ## Module map
 
 | File | Role |
 |---|---|
-| `labels.py` | Regenerate a problem from `(seed, split)`; ground-truth labels from `Problem.lora_label`; token-alignment metadata (`sol_bos_index`, `step_positions`, `problem_desc_end_index`). |
-| `data.py` | Offline V-probe datasets: multiprocess generation into resumable parquet shards + metadata (`gen-data` CLI). |
-| `extract.py` | **Linear probe** stage A: frozen forward passes, cache `(X, y, groups)` per layer to `.npz`. |
-| `probe.py` | **Linear probe** stage B: `nn.Linear` on cached activations, group split, MCC. |
-| `queries.py` | **V-probe** inputs: one problem seed → labelled token sequences; owns each target's input layout and read position. |
-| `vprobe.py` | **V-probe** (§4.1) model: frozen LM + rank-8 embedding delta + linear head at `[END]`; save/load of the trainable parts and the LM they pair with. |
-| `vprobe_train.py` | **V-probe** training loop: group split, length-bucketed batches, epoch loop, reported metrics. |
+| `labels.py` | Regenerate a problem from `(seed, split, op)`; ground-truth labels from `Problem.lora_label`; token-alignment metadata (`sol_bos_index`, `step_positions`, `problem_desc_end_index`). |
+| `build_queries.py` | One problem seed → labelled token sequences; owns each target's input layout and read position. |
+| `data.py` | Offline query datasets: multiprocess generation into parquet shards + metadata (`gen-data` CLI). |
+| `vprobe.py` | The probe: frozen LM + rank-8 embedding delta + linear head at `[END]`; save/load of the trainable parts and the LM they pair with. |
+| `vprobe_train.py` | Training loop: group split, length-bucketed batches, epoch loop, reported metrics. |
 | `evaluate.py` | Test-time evaluation: rebuild a saved probe from its run dir, predict on a held-out offline dataset, save per-query predictions + metrics into the run dir. |
 | `report_dep.py` | Standalone interactive HTML report for `dep(A, B)`: dependency graph of predictions vs ground truth, pretrained/random toggle, confusion matrices. |
-| `run.py` | Typer CLI: `extract`, `train`, `gen-data`, `vprobe`, `test`, `report-dep`. |
+| `run.py` | Typer CLI: `gen-data`, `vprobe`, `test`, `report-dep`. |
 
 Test coverage (and the model-dependent code it deliberately skips): [../tests/README.md](../tests/README.md).
 
@@ -26,26 +95,17 @@ Test coverage (and the model-dependent code it deliberately skips): [../tests/RE
 
 ```mermaid
 flowchart TD
-    S["seed, split"] --> P["iGSM Problem"]
+    S["seed, split, op"] --> P["iGSM Problem"]
     P --> L["labels<br/>lora_label / lora_label2('dep')"]
     P --> T["token_id<br/>[222] prob [223] sol [224] ans"]
 
-    T --> LC["cache h[layer][pos] → npz"]
-    L --> LC
-    LC --> LH["nn.Linear → MCC"]
-
-    T --> VI["inject query at probe position"]
-    P --> VI
+    T --> VI["inject the query at probe position"]
     L --> VI
     VI --> VH["frozen LM + rank-8 delta → head at [END]"]
 
-    classDef lin stroke:#2563eb,stroke-width:3px;
     classDef vp stroke:#7c3aed,stroke-width:3px;
-    class LC,LH lin
     class VI,VH vp
 ```
-
-Blue = linear probe (cached, two-stage). Purple = V-probe (end-to-end, no cache).
 
 ## Ground-truth labels
 
@@ -60,25 +120,25 @@ A parameter is a 4-tuple `(l, i, j, k)` over the layered category hierarchy:
 
 - `l=0` **instance**: how many `N[i+1][k]` each `N[i][j]` has (direct edge).
 - `l=1` **abstract**: how many `ln[k]` in total `N[i][j]` has (aggregate; multi-hop).
-  `all_param` enumerates *every* candidate, mentioned or not.
 
-Step alignment is verified against iGSM source: with `be_shortest=True`, solution sentences
-follow `topological_order` (the order `lora_label` iterates) and each ends in a standalone `.`
-(token 13). `_solution_step_positions` asserts the counts match, so tokenizer drift fails loudly.
+iGSM's `all_param` enumerates every candidate, named in the text or not; `labels.named_params`
+narrows it to the text-grounded ones and every label array is narrowed with it, so one indexing
+serves `labels`, `nece`, `dep()` and a query's `param_a`/`param_b`.
+
+Step alignment: solution sentences follow `topological_order` (the order `lora_label` iterates)
+and each ends in a standalone `.` (token 13); `_solution_step_positions` asserts the counts
+match, so tokenizer drift fails loudly.
 
 ## Probe positions (paper §4.1, Figure 13)
-
 - `nece(A)`: end of the question = `sol_bos_index`.
 - `dep(A,B)`: end of the **problem description**, before the question (the question tokens are
-  dropped). Position from `problem_desc_end_index`, which asserts token alignment (stable on
-  200/200 test problems).
+  dropped). Position from `problem_desc_end_index`, which asserts token alignment.
 - `known/can_next/nece_next/value`: end of each solution sentence = `step_positions[i_]`.
 
-## Linear probe vs V-probe
+## Query layout
 
-The linear probe reads one hidden state and can't condition on *which* parameter is queried —
-at the shared `sol_bos` position it is **degenerate by construction** (one vector, many labels)
-and serves as the baseline. The V-probe injects the query into the input (`--target` picks the task):
+The probe injects the query into the input, so it can condition on *which* parameter is asked
+(`--target` picks the task):
 
 ```
 nece(A):   [EOS] <problem+question tokens>  [START] <desc(A)> [END]
@@ -88,20 +148,16 @@ dep(A,B):  [EOS] <problem tokens, no ques.> [START] <desc(A)> [MID] <desc(B)> [E
 
 `[START]=225, [END]=226, [MID]=227` are byte-fallback ids that never appear in ASCII iGSM text
 (0 occurrences in 300 problems). They are *not* untrained: weight tying collapses every
-never-occurring row toward a single "never the next token" vector (norm 1.151 vs 1.5–2.9 for
-the markers), so the rank-8 delta exists to give the markers usable representations.
+never-occurring row toward a single "never the next token" vector, so the rank-8 delta exists to
+give the markers usable representations.
 
 **Query sampling:** a problem's queries are highly correlated, so `--max-queries` (default 10,
 the paper's Appendix E rule) caps each problem's contribution, drawn uniformly without
-replacement. `nece` samples parameters directly; `dep` splits the budget evenly between positive
-and negative pairs.
-
-**dep balancing:** the pair matrix is `n_param × n_param` and ~83% negative, so per problem we
-take equally many positive and negative pairs (seeded by the problem seed → deterministic). The
-dataset is ~50/50 by construction, so `--balance-classes` is *not* needed and
-`acc_majority ≈ 0.5`. A positive-poor problem yields fewer than 10 queries rather than filling
-the budget with negatives — a deliberate deviation from the paper, which draws pairs uniformly.
-`--unbalanced` is that paper-literal rule, and then `--balance-classes` *is* needed.
+replacement and seeded by the problem seed. `nece` samples parameters directly; `dep` splits the
+budget evenly per class, making the dataset ~50/50 (`acc_majority ≈ 0.5`) instead of the pair
+matrix's natural ~17% positive — so dep does *not* need `--balance-classes`. A positive-poor
+problem then yields fewer than 10 queries rather than filling up with negatives; `--unbalanced`
+is the paper-literal rule (uniform over all pairs) and does need `--balance-classes`.
 
 **Trainables:** linear head + `delta_a (V×8, zero-init) @ delta_b (8×d, N(0,0.02))`. The LM
 stays frozen and in eval mode; zero-init `delta_a` makes step 0 exactly the pretrained model.
@@ -109,21 +165,16 @@ stays frozen and in eval mode; zero-init `delta_a` makes step 0 exactly the pret
 **Controls** (both needed to interpret a score): majority-guess accuracy (`acc_majority`), and
 the same procedure on a random-init LM (`--random-model`). Evidence = pretrained − random gap.
 
-## Splitting: by group, not row
+## train/val Splitting: by problem, not by query
+Validation data contains different problems than training data, not just different queries.
+Training splits by **problem seed** (`ProbeQuery.group`).
 
-Examples cluster by problem (shared read position for the linear probe, shared prefix for the
-V-probe), so a row-level split leaks correlated vectors into both halves and `*_val` just
-measures memorisation. Both trainers split by **problem seed** (`groups` / `ProbeQuery.group`);
-an npz without `groups` falls back to a row split with a loud warning.
-
-## Resource use (read before the V-probe)
+## Resource use (read before training)
 
 The embedding delta sits at the **bottom** of the LM, so backprop traverses all 12 blocks and
 autograd stores every block's activations — this, not the 0.41 M trainable params, is the cost.
-
-**Windows hazard:** exhausting VRAM does *not* raise OOM. WDDM silently spills to shared GPU
-memory (system RAM) and thrashes over PCIe — batch times creep up (we saw 1.4 → 15.6 s/batch)
-and the desktop hangs. Mitigations, all on by default:
+On Windows, exhausting VRAM does *not* raise OOM: the driver silently spills into system RAM and
+thrashes over PCIe until the desktop hangs. Guardrails, all on by default:
 
 | guardrail | effect |
 |---|---|
@@ -134,14 +185,12 @@ and the desktop hangs. Mitigations, all on by default:
 | `MAX_SEQ_LEN = 1024` | drops pathological queries that would set a batch's memory |
 | `--batch-size 8` (default) | the main VRAM knob |
 
-Measured after fixes: **peak 3.56 GiB**, flat batch times, no spill. `peak_vram_gib` is in
-every run's metrics — watch it. If you OOM, lower `--batch-size` first; don't raise
-`--vram-fraction` above ~0.9.
+Peak with the defaults is 3.56 GiB, and `peak_vram_gib` is in every run's metrics — watch it. If
+you OOM, lower `--batch-size` first; don't raise `--vram-fraction` above ~0.9.
 
-**Length bucketing vs. batch diversity.** Sorting by length trades away batch independence:
-a problem's queries are near-equal in length, so a *stable* sort keeps them adjacent and one
-problem can fill a batch. Shuffling the indices before the sort breaks those ties at no
-padding cost. Measured at 300 problems × the 10-query cap, batch size 8
+**Length bucketing vs. batch diversity.** A problem's queries are near-equal in length, so a
+*stable* length sort keeps them adjacent and one problem can fill a batch; shuffling the indices
+first breaks those ties at no padding cost. At 300 problems × the 10-query cap, batch size 8
 (`scripts/debug/batch_composition.py`):
 
 | strategy | distinct problems / batch | padded tokens / batch | padding waste |
@@ -150,42 +199,39 @@ padding cost. Measured at 300 problems × the 10-query cap, batch size 8
 | stable sort | 5.12 | 620 | 0.1% |
 | pre-shuffled (used) | 7.41 | 620 | 0.1% |
 
-Bucketing costs almost nothing in diversity once the pre-shuffle is there, and saves ~21% of
-every batch's tokens. The gap widens with queries per problem — pass a larger second argument
-to the script to see the uncapped regime, where the stable sort collapses to ~1.9.
+The gap widens with queries per problem — pass a larger second argument to the script to see the
+uncapped regime, where the stable sort collapses to ~1.9.
 
 ## Metrics
 
 - **MCC** (Matthews correlation): 0 = chance regardless of class balance, 1 = perfect;
   comparable across layers and targets.
-- `*_train` vs `*_val` gap = memorisation check. The V-probe also reports plain accuracy for
+- `*_train` vs `*_val` gap = memorisation check. Plain accuracy is also reported, for
   comparability with the paper's Figure 7.
 
 ## The model: download & loading (read first)
 
 Use the HuggingFace checkpoint [m6rtine/gpt2-igsm-med](https://huggingface.co/m6rtine/gpt2-igsm-med)
-(~501 MB), into the gitignored `final_models/`:
+(~501 MB), into the gitignored `models/`:
 
 ```bash
-uv run python -c "from huggingface_hub import snapshot_download; snapshot_download('m6rtine/gpt2-igsm-med', local_dir='final_models/gpt2-igsm-med')"
+uv run python -c "from huggingface_hub import snapshot_download; snapshot_download('m6rtine/gpt2-igsm-med', local_dir='models/gpt2-igsm-med')"
 ```
 
-Pass `--model-path final_models/gpt2-igsm-med` to the commands below. Do **not** use `AutoModel`
-— it builds a stock GPT-2 with absolute positions and no RoPE; the probe CLIs load through our
+Pass `--model-path models/gpt2-igsm-med` to the commands below. Do **not** use `AutoModel` — it
+builds a stock GPT-2 with absolute positions and no RoPE; the probe CLIs load through our
 `GPT2LMHeadModelWithRoPE` automatically.
 
-**Why "inv_freq in place" matters:** `from_pretrained` builds on the meta device and skips
-`__init__`, so the RoPE `inv_freq` buffer is only correct if *loaded from the checkpoint*.
-Before the fix (ported from `qknorm` commit `4957741`) the buffer was non-persistent and came
-out as uninitialized memory, silently corrupting the model. The HF checkpoint stores the 12
-`inv_freq` tensors; `load_lm` / `load_frozen_model` verify them against the formula on load and
-raise on mismatch, so a bad checkpoint fails loudly.
+The RoPE `inv_freq` buffers are only correct when loaded *from the checkpoint*, so `load_lm` /
+`load_frozen_model` verify all 12 against the formula on load and raise on mismatch — a bad
+checkpoint fails loudly. (Background: [project_log.md](project_log.md), "`inv_freq` is garbage
+after `from_pretrained`".)
 
 ## Running
 
 ```bash
 uv run python -m pytest .\tests\ -q                                    # tests
-uv run python -m src.probe.run vprobe --model-path final_models/gpt2-igsm-med \
+uv run python -m src.probe.run vprobe --model-path models/gpt2-igsm-med \
     --n-problems 16 --epochs 1 --batch-size 16                         # smoke (~30 s)
 ```
 
@@ -194,42 +240,44 @@ uv run python -m src.probe.run vprobe --model-path final_models/gpt2-igsm-med \
 **Always pass `--balance-classes`** (the ~80/20 imbalance otherwise collapses the probe to the
 majority class, MCC ~0). Keep `--n-problems` and `--seed` identical between a run and its control.
 
+**Train the probe**
 ```bash
-uv run python -m src.probe.run vprobe --target nece --model-path final_models/gpt2-igsm-med --n-problems 500 --epochs 20 --batch-size 24 --balance-classes --seed 0
-uv run python -m src.probe.run vprobe --target nece --random-model --n-problems 500 --epochs 20 --batch-size 24 --balance-classes --seed 0
+uv run python -m src.probe.run vprobe --target nece --model-path models/gpt2-igsm-med --n-problems 20000 --epochs 1 --batch-size 24 --balance-classes --seed 872650
+```
+**Train the random-model control**
+```bash
+uv run python -m src.probe.run vprobe --target nece --random-model --n-problems 20000 --epochs 1 --batch-size 24 --balance-classes --seed 872650
 ```
 
 ### dep(A, B)
 
-Same shape as nece, but **no `--balance-classes`** (balanced by construction) and ~5–10× more
-queries per problem (one per sampled pair), so fewer problems give the same query count.
+Same shape as nece, but **no `--balance-classes`** (balanced by construction). Both targets cap
+each problem at `--max-queries` (default 10), so a given `--n-problems` yields a comparable
+query count either way.
 
+**Train the probe**
 ```bash
-uv run python -m src.probe.run vprobe --target dep --model-path final_models/gpt2-igsm-med --n-problems 500 --epochs 20 --batch-size 24 --seed 0
-uv run python -m src.probe.run vprobe --target dep --random-model --n-problems 500 --epochs 20 --batch-size 24 --seed 0
+uv run python -m src.probe.run vprobe --target dep --model-path models/gpt2-igsm-med --n-problems 20000 --epochs 1 --batch-size 24 --seed 872650
+```
+**Train the random-model control**
+```bash
+uv run python -m src.probe.run vprobe --target dep --random-model --n-problems 20000 --epochs 1 --batch-size 24 --seed 872650
 ```
 
-For query counts that avoid overfitting, generate offline first (multiprocess, resumable) and
-pass `--data` instead of `--n-problems`:
+For query counts that avoid overfitting, generate offline first (multiprocess) and pass `--data`
+instead of `--n-problems`:
 
 ```bash
-uv run python -m src.probe.run gen-data --target dep --n-problems 20000 --workers 8 --model-path final_models/gpt2-igsm-med --out data/probe/vprobe_dep_test_20k
-uv run python -m src.probe.run vprobe --target dep --model-path final_models/gpt2-igsm-med --data data/probe/vprobe_dep_test_20k
+uv run python -m src.probe.run gen-data --target dep --n-problems 20000 --workers 8 --model-path models/gpt2-igsm-med --out data/probe/vprobe_dep_test_20k
 ```
-
-Tuning knobs: `--epochs`, `--lr`, `--weight-decay`, `--rank`, `--batch-size`,
-`--balance-classes`. Diagnose on `mcc_train` first (can it fit at all?) before `mcc_val`; the
-zero-init delta learns slowly through 12 frozen blocks, so if `--lr` stalls, raise it (e.g.
-3e-3) or add epochs.
-
-### Linear-probe baseline
-
-Reads one shared position → degenerate for `nece` by construction (baseline, not expected to work):
-
 ```bash
-uv run python -m src.probe.run extract --model-path final_models/gpt2-igsm-med --layer 6 --n-problems 1000 --out data/probe/nece_l6.npz
-uv run python -m src.probe.run train --data data/probe/nece_l6.npz --balance-classes
+uv run python -m src.probe.run vprobe --target dep --model-path models/gpt2-igsm-med --data data/probe/vprobe_dep_test_20k
 ```
+
+Tuning knobs: `--lr`, `--weight-decay`, `--rank`, `--batch-size`, `--balance-classes`.
+`--epochs` defaults to 1 so every query is seen exactly once — more data is cheap, repeating it
+is not. Diagnose on `mcc_train` first (can it fit at all?) before `mcc_val`; the zero-init delta
+learns slowly through 12 frozen blocks, so if `--lr` stalls, raise it (e.g. 3e-3).
 
 ## Viewing results
 
@@ -246,75 +294,65 @@ artificially balanced 1:1 pair sample. The test pipeline answers the stronger qu
 problems from a **disjoint seed range**, on the **natural pair distribution** (every ordered
 off-diagonal (A, B) pair, ~85–90% negative):
 
+#### 1. eval dataset: all pairs, seeds far above any training range
 ```bash
-# 1. eval dataset: all pairs, seeds far above any training range (training used 0..499)
 uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --n-problems 200 --seed-start 1000000 --workers 8 --out data/probe/vprobe_dep_eval_200
-
-# 2. evaluate both probes (writes <run-dir>/test_<dataset>/{predictions.parquet,metrics.json})
+```
+#### 2. evaluate both probes (writes <run-dir>/test_<dataset>/{predictions.parquet,metrics.json})
+```bash
 uv run python -m src.probe.run test --run-dir trained_probes/<pretrained-run> --data data/probe/vprobe_dep_eval_200
+```
+```bash
 uv run python -m src.probe.run test --run-dir trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200
-
-# 3. interactive report (problem text + dependency graph + confusion matrices)
+```
+#### 3. interactive report (problem text + dependency graph + confusion matrices)
+```bash
 uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_200 --out visualizations/dep_probe_report.html
 ```
 
-Sizing: iGSM-med problems have 12–72 candidate params (~1,200 ordered pairs per problem on
-average), so 200 problems ≈ 240k queries. `test` is inference-only (no-grad, bf16) — far cheaper
-per query than training.
+Sizing: `--dep-all-pairs` keeps every ordered off-diagonal pair — mean 333 per problem (median
+240, max 1,806, over 200 `test`-split problems), so 200 problems ≈ 67k queries.
+`--uniform-difficulty` raises that, since pinning a high op count builds a larger problem.
+`test` is inference-only (no-grad, bf16), far cheaper than training.
+
+MCC on the natural distribution punishes false positives much harder than the balanced val
+metric, so expect test MCC below `mcc_val` even for a good probe.
+
+**Random-control caveat:** the control's transformer exists only in the training process and is
+rebuilt from the run's recorded `--seed` at test time. That is faithful only for runs trained
+after `load_lm` started seeding the random init; older random runs cannot be re-paired with
+their transformer, so their test output is a fresh-random-model reference.
 
 ### Difficulty and problem count
 
 The report grid is **columns = difficulty (`n_op`), rows = alternative problems** at that
-difficulty. Two knobs control how it fills:
+difficulty, filled from the first `--n-problems` of the dataset. Two knobs control it:
 
-- **An evenly filled grid:** plain `gen-data --n-problems N` takes whatever `n_op` the seeds land
-  on, which is skewed low. `--uniform-difficulty` instead *builds* each problem at a pinned op,
-  cycling `1..max_op` by problem index, so every op gets an equal share and so does any prefix —
-  which is what `report-dep --n-problems` embeds. Costs ~1.8x per problem in generation.
+- `--uniform-difficulty` *builds* each problem at a pinned op, cycling `1..max_op` by problem
+  index, so every op — and every prefix of the dataset — gets an equal share. Costs ~1.8x per
+  problem. Without it, `gen-data` takes whatever op the seeds land on, which is skewed low.
 
   ```bash
   uv run python -m src.probe.run gen-data --target dep --dep-all-pairs --uniform-difficulty --n-problems 92 --out data/probe/vprobe_dep_showcase
   ```
 
-- **Harder difficulties (op 16–23):** `--max-op` defaults to 23, covering the paper's
-  out-of-distribution eval range; pretraining used 15. Under the natural distribution op>15 stays
-  rare (~10% of problems, and op 23 may not appear at all), so pair the raised cap with
-  `--uniform-difficulty` to actually get those problems.
+- `--max-op` defaults to 23, the paper's out-of-distribution eval range; pretraining used 15.
+  op>15 is rare naturally (~10%), so raise the cap together with `--uniform-difficulty`. State
+  in any writeup that op 16–23 is **outside the model's training range**: low scores there
+  measure length generalization, not a probe failure.
 
-  A caveat worth stating in any writeup: op 16–23 is **outside the model's training range**, so
-  low scores there measure length/complexity generalization, not a probe failure.
+An op-pinned problem is a *different* problem from what that seed yields unpinned, so the op is
+part of a problem's identity. Datasets store it per query (`n_op`) and `report-dep` feeds it
+back into regeneration, erroring out rather than drawing a graph beside another problem's text.
 
-  An op-pinned problem is a *different* problem from the one that seed yields unpinned, so the
-  op is part of a problem's identity. The dataset stores it per query (`n_op`), and `report-dep`
-  feeds it back into regeneration — it errors out rather than draw a graph beside text from a
-  different problem.
+### The report
 
-The report is a single self-contained HTML file: each problem's parameters on a circle, each
-tested pair as a directed edge A→B ("A depends on B"). Line style = true label (solid:
-dependency, dashed: none); colour = correctness (green right, red wrong, wrong edges also
-marked ×). True negatives dominate and start hidden. Hover a node to isolate its pairs, click
-to pin; a toggle switches pretrained ↔ random control; confusion matrices below (per problem or
-whole test set). Since MCC on the natural distribution punishes false positives much harder
-than the balanced val metric, expect test MCC below `mcc_val` even for a good probe.
-
-**Random-control caveat:** the control's transformer exists only in the training process; it
-is rebuilt from the run's recorded `--seed` at test time. That is only faithful for runs
-trained *after* `load_lm` started seeding the random init — the probes of older random runs
-cannot be re-paired with their transformer (their test output is a fresh-random-model
-reference, not the trained pairing).
-
-**Why not `inspect_ai`:** considered and dropped for probe evaluation — Inspect is built
-around generation evals (solver → model output → scorer, chat-style transcript viewer), while
-probe testing is plain supervised classification; the custom report covers the per-sample
-inspection need. Inspect becomes the right tool for *behavioral* evals of the LM itself
-(answer accuracy on iGSM problems).
+One self-contained HTML file: a problem's parameters on a circle, each tested pair a directed
+edge A→B ("A depends on B"). Line style = true label (solid: dependency, dashed: none), colour =
+correctness (green right, red wrong, wrong edges also marked ×). True negatives dominate and
+start hidden. Hover a node to isolate its pairs, click to pin; a toggle switches pretrained ↔
+random control; confusion matrices sit below, per problem or over the whole test set.
 
 ## Known gaps / TODOs
 
-See [future_plans.md](future_plans.md) for the live list. Structural gaps:
-
-- V-probe targets: `nece`, `dep` done. Step-dependent targets (`known/can_next/nece_next/value`)
-  need queries per `(problem, param, step)` truncated at `step_positions[i_]`.
-- `extract.py` only caches the `nece` position; a linear dep baseline needs the
-  end-of-problem-description position cached too.
-- The per-example viewer (`report-dep`) is dep-only; nece has no equivalent yet.
+See [backlog.md](backlog.md) for the live list.
