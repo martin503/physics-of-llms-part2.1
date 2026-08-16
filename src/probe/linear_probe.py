@@ -1,8 +1,8 @@
-"""Stage B: the probe itself. Trained on cached activations; the transformer is absent here.
+"""Linear probe. Trained on cached activations; the transformer is absent here.
 
 A linear probe is deliberately tiny: one affine map `h -> logits`. That's the whole point
 -- if a single linear layer can recover a property, the property is *linearly present* in the
-residual stream. Nothing to freeze (the frozen model isn't in this file).
+residual stream.
 
 The query-conditioned V-probe lives in `src.probe.vprobe`.
 """

@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.probe.probe import LinearProbe, train_probe
+from src.probe.linear_probe import LinearProbe, train_probe
 
 D_MODEL = 32
 N_SAMPLES = 600

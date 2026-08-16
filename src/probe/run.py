@@ -150,7 +150,7 @@ def train(
     seed: Annotated[int, typer.Option('--seed', help='Split/init seed; fix it across a sweep.')] = 0,
 ) -> None:
     """Stage B: train the linear probe (group split) and print held-out metrics."""
-    from src.probe.probe import train_probe
+    from src.probe.linear_probe import train_probe
 
     d = np.load(data)
     groups = d['groups'] if 'groups' in d.files else None
