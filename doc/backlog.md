@@ -1,7 +1,6 @@
 
 | size | feature |
 |:----:|---------|
-| small | save full random model for probe to be more code independent? |
 | small | generate regular continuations on probe prompts to justify need for training probes. |
 | medium | (partially DONE) for dep(A, B): `test` + `report-dep` commands (interactive graph report, see probe_guide "Testing a trained probe"). Still open for nece. |
 | medium | Test linear probes: same or similar queries (possibly without special tokens), train only linear probes. |

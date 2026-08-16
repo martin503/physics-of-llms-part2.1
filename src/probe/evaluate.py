@@ -7,9 +7,9 @@ on the **natural pair distribution** (every ordered (A, B) pair, ~85-90% negativ
 with ``gen-data --dep-all-pairs``) instead of the balanced training universe?
 
 Flow (see ``run.py test``): a run directory from ``vprobe`` holds everything needed to
-resurrect the probe -- ``config.json`` says which LM it trained through (path, or random-init
-+ seed) and ``probe.pt`` holds the trainable delta/head. Predictions land *inside* the run
-directory, keyed by dataset name::
+resurrect the probe -- ``config.json`` says which LM it trained through (a checkpoint path, or
+the random-init control stored alongside as ``vprobe.RANDOM_LM_NAME``) and ``probe.pt`` holds
+the trainable delta/head. Predictions land *inside* the run directory, keyed by dataset name::
 
     trained_probes/<run>/test_<dataset>/predictions.parquet   per-query: group, param_a,
                                                               param_b, label, pred, p1
@@ -18,12 +18,6 @@ directory, keyed by dataset name::
 Keeping per-query predictions (not just metrics) is what makes the graph report
 (``report_dep.py``) possible: each dep query carries its (A, B) pair identity, so predictions
 can be drawn as edges on the problem's dependency graph.
-
-Random-model caveat: the random-init control's transformer lives nowhere but the training
-process. Runs trained since the seeding fix rebuild it exactly from the recorded ``seed``;
-runs from before that fix cannot be re-paired with their transformer, and evaluating them
-here silently uses a *different* random model (still a valid "untrained control" reference
-point, but not the exact model the probe was trained through -- expect chance-level output).
 """
 
 from __future__ import annotations
@@ -120,7 +114,13 @@ def evaluate_run(
     per-query predictions and aggregate metrics into `test_output_dir(...)`; return the metrics.
     """
     from src.probe.data import git_commit, load_vprobe_queries
-    from src.probe.vprobe import apply_memory_guardrails, load_lm, load_vprobe
+    from src.probe.vprobe import (
+        RANDOM_LM_NAME,
+        apply_memory_guardrails,
+        load_lm,
+        load_random_lm,
+        load_vprobe,
+    )
 
     run_dir, data_dir = Path(run_dir), Path(data_dir)
     config = json.loads((run_dir / 'config.json').read_text(encoding='utf-8'))
@@ -133,15 +133,11 @@ def evaluate_run(
             f"{data_dir} holds '{data_meta.get('target')}' queries"
         )
 
-    if params.get('random_model'):
-        logger.warning(
-            'random-init control: rebuilding the LM from seed=%s. Faithful only if the run '
-            'was trained with seeded init (runs from before that fix cannot be re-paired '
-            'with their transformer; expect chance-level output).',
-            params.get('seed'),
-        )
     apply_memory_guardrails(device, params.get('vram_fraction', 0.85))
-    lm = load_lm(params.get('model_path'), device=device, seed=params.get('seed'))
+    if params.get('random_model'):
+        lm = load_random_lm(run_dir / RANDOM_LM_NAME, device=device)
+    else:
+        lm = load_lm(params.get('model_path'), device=device)
     probe = load_vprobe(run_dir / 'probe.pt', lm, device=device)
 
     preds, p1 = predict_vprobe(probe, queries, batch_size=batch_size, device=device)

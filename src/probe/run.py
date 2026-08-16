@@ -321,7 +321,7 @@ def vprobe(
     """V-probe (paper 4.1): frozen LM + rank-8 embedding delta + linear head at [END]."""
     from src.probe.data import load_vprobe_queries
     from src.probe.build_queries import build_vprobe_queries
-    from src.probe.vprobe import load_lm, save_vprobe
+    from src.probe.vprobe import RANDOM_LM_NAME, load_lm, save_random_lm, save_vprobe
     from src.probe.vprobe_train import train_vprobe
 
     if random_model == (model_path is not None):
@@ -356,9 +356,10 @@ def vprobe(
     else:
         queries = build_vprobe_queries(n_problems, target=target, split=split, seed_start=seed_start)
 
-    # `seed` also fixes the random-init control's weights: `test` rebuilds the same LM from
-    # the recorded seed, so a saved probe.pt can be re-paired with its transformer later.
     lm = load_lm(None if random_model else model_path, device=device, seed=seed)
+    if random_model:
+        save_random_lm(lm, run_dir / RANDOM_LM_NAME)
+        log.info('saved random-init weights to %s', run_dir / RANDOM_LM_NAME)
     probe, metrics, history = train_vprobe(
         queries, lm, rank=rank, epochs=epochs, batch_size=batch_size, lr=lr,
         weight_decay=weight_decay, balance_classes=balance_classes,

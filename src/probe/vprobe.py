@@ -13,9 +13,9 @@ Two small things train jointly (the LM stays frozen):
     pretrained embedding rows collapsed to near-identical "never the next token" vectors, so
     without this update the model literally cannot distinguish the probe markers from each other.
 
-The module also owns what pairs a trained probe back with its transformer: `save_vprobe`
-stores only the trainable parts, and `load_lm` rebuilds the LM -- including the paper's
-random-init control, which exists nowhere but its own seed. Fitting lives in `vprobe_train.py`.
+The module also owns what pairs a trained probe back with its transformer: `save_vprobe` stores
+the trainable parts, `load_lm` the pretrained LM, `save_random_lm`/`load_random_lm` the
+random-init control's exact weights.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from pathlib import Path
 
 import torch
 from jaxtyping import Float, Int
+from safetensors.torch import load_file, save_file
 from torch import nn
 
 from src.data.igsm import EOS
@@ -176,10 +177,7 @@ def load_lm(model_path: str | None, device: str = 'cuda', seed: int | None = Non
     The random-init model is the paper's control: whatever the V-probe scores on it is the
     capability added by the probe's own finetuning, not knowledge read out of pretraining.
 
-    `seed` (random-init only) makes the control's weights reproducible: a saved `probe.pt`
-    is meaningless without the exact transformer it was trained through, and the random LM
-    exists nowhere but this process. Training and later test evaluation must both call this
-    with the run's recorded seed to get the *same* control model back.
+    `seed` (random-init only) seeds the build; `save_random_lm` is what pins the weights down.
     """
     from src.model.gpt2_rope import GPT2LMHeadModelWithRoPE, build_gpt2_rope, verify_rope_buffers
 
@@ -193,3 +191,28 @@ def load_lm(model_path: str | None, device: str = 'cuda', seed: int | None = Non
     model.config.use_cache = False
     model.eval().to(device)
     return model
+
+
+RANDOM_LM_NAME = 'lm_random_init.safetensors'
+
+
+def save_random_lm(model, path: Path | str) -> None:
+    """Save a random-init LM's weights (~478MB) verbatim.
+
+    `lm_head.weight` is tied to `transformer.wte.weight`, and safetensors refuses to write
+    tensors sharing memory, so it is dropped here and restored by tying on load.
+    """
+    state = {
+        k: v.contiguous().cpu() for k, v in model.state_dict().items() if k != 'lm_head.weight'
+    }
+    save_file(state, str(path))
+
+
+def load_random_lm(path: Path | str, device: str = 'cuda'):
+    """Build a fresh GPT2-RoPE and overwrite its weights with the ones saved at `path`."""
+    model = load_lm(None, device='cpu')
+    state = load_file(str(path))
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    assert not unexpected, f'unexpected keys in {path}: {unexpected}'
+    assert missing == ['lm_head.weight'], f'missing keys in {path}: {missing}'
+    return model.to(device)

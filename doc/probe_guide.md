@@ -48,8 +48,9 @@ uv run python -m src.probe.run test --run-dir trained_probes/<random-run> --data
 uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_230 --out results/probes/<dep_eval_230>
 ```
 
-`test` reads `--model-path` and `--seed` from each run's own `config.json`, so steps 5–6 take no
-model arguments — the random control's transformer is rebuilt from its recorded seed.
+`test` reads `--model-path` from each run's own `config.json`, so steps 5–6 take no model
+arguments; the random control's transformer is its saved `lm_random_init.safetensors`, not a
+re-seeded rebuild (see "Testing a trained probe" below).
 
 ### Why these settings
 
@@ -100,13 +101,16 @@ flowchart TD
     P --> L["labels<br/>lora_label / lora_label2('dep')"]
     P --> T["token_id<br/>[222] prob [223] sol [224] ans"]
 
-    T --> VI["inject the query at probe position"]
+    T --> VI["inject query at probe position"]
     L --> VI
-    VI --> VH["frozen LM + rank-8 delta → head at [END]"]
+    VI --> VH["frozen LM + rank-8 delta</br>→ head at [END]"]
 
     classDef vp stroke:#7c3aed,stroke-width:3px;
     class VI,VH vp
 ```
+* seed is used for random model init  
+* split = train/val split (20% of problems for val)  
+* op = reasoning step count (1..max_op, default 23)
 
 ## Ground-truth labels
 
@@ -144,7 +148,7 @@ The probe injects the query into the input, so it can condition on *which* param
 ```
 nece(A):   [EOS] <problem+question tokens>  [START] <desc(A)> [END]
 dep(A,B):  [EOS] <problem tokens, no ques.> [START] <desc(A)> [MID] <desc(B)> [END]
-                                                                               ^ read last-layer h here
+                                                        read last-layer h here ⤴︎
 ```
 
 `[START]=225, [END]=226, [MID]=227` are byte-fallback ids that never appear in ASCII iGSM text
@@ -297,9 +301,9 @@ range and the same balance. Command 4 builds a separate dataset instead: disjoin
 valid queries per problem rather than a sample (sizes in the TL;DR). Expect test MCC below
 `mcc_val`.
 
-**Random-control caveat:** the control's transformer lives only in the training process and is
-rebuilt from the run's recorded `--seed`. Runs trained before `load_lm` seeded the random init
-cannot be re-paired with theirs, so their test output is only a fresh-random reference.
+**Random control:** `vprobe` saves the control's exact weights as `lm_random_init.safetensors`
+in its run dir (~478MB), and `test` loads them back. Rebuilding from `--seed` instead would
+break as soon as the init code or the `transformers` version changes.
 
 ### Difficulty
 
