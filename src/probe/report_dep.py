@@ -38,6 +38,10 @@ whole test set) and an n x n dependency-matrix view sit below the graph.
 Data comes from the ``test`` command's saved predictions for *both* runs (pretrained +
 random control) on the *same* ``--dep-all-pairs`` dataset. Problems are regenerated from
 their seed and requested op for text and parameter names. Predictions are never recomputed here.
+
+If the pretrained run also holds solutions for the dataset (``run.py solve``), each problem
+carries what the model itself wrote and whether that was right, and the page can show it in
+place of iGSM's reference solution. Without them the page shows the reference solution alone.
 """
 
 from __future__ import annotations
@@ -138,6 +142,38 @@ def _problem_payload(
     }
 
 
+def _attach_solutions(
+    problems: list[dict[str, Any]], run_dir: Path, data_dir: Path
+) -> dict[str, Any] | None:
+    """Add each problem's model solution (`p['model']`) in place; return the solving metadata.
+
+    Returns None when the run has no solutions for this dataset, which the page treats as
+    "reference solution only". Problems `solve` did not cover keep `p['model'] = None`.
+    """
+    from src.probe.solve import load_solutions
+
+    rows, meta = load_solutions(run_dir, data_dir)
+    if not rows:
+        return None
+    for p in problems:
+        row = rows.get(p['seed'])
+        p['model'] = row and {
+            'correct': bool(row['correct']),
+            'answerCorrect': bool(row['answer_correct']),
+            'solution': row['solution'],
+            'answer': row['answer'],
+            'goldAnswer': int(row['gold_answer']),
+        }
+    shown = [p['model'] for p in problems if p.get('model')]
+    return {
+        'model': meta.get('model_path'),
+        'solveRate': meta.get('solve_rate'),
+        'nProblems': meta.get('n_problems'),
+        'nShown': len(shown),
+        'nShownCorrect': sum(m['correct'] for m in shown),
+    }
+
+
 def build_report(
     pretrained_run: Path | str,
     random_run: Path | str,
@@ -220,6 +256,7 @@ def build_report(
             seed, problems[-1]['nOp'], len(problems[-1]['params']), len(edges),
         )
     problems.sort(key=lambda p: (p['nOp'], p['seed']))  # grid columns = difficulty
+    solutions_meta = _attach_solutions(problems, pretrained_run, data_dir)
 
     payload = {
         'meta': {
@@ -231,6 +268,7 @@ def build_report(
             'created': datetime.now().astimezone().isoformat(timespec='seconds'),
             'nRowsTotal': int(len(pre['label'])),
             'nProblemsShown': len(problems),
+            'solutions': solutions_meta,
         },
         'overall': overall,
         'problems': problems,

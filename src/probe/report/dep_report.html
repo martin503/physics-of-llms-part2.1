@@ -77,9 +77,23 @@
   .probgrid button {
     width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--muted);
     background: transparent; cursor: pointer; padding: 0; vertical-align: middle;
+    display: inline-flex; align-items: center; justify-content: center;
+    font: 12px/1 inherit; color: var(--bad);
+  }
+  /* fill = did the model solve this problem (× repeats it without colour) */
+  .probgrid button.solved {
+    background: color-mix(in srgb, var(--good) 32%, transparent);
+    border-color: color-mix(in srgb, var(--good) 65%, var(--muted));
+  }
+  .probgrid button.unsolved {
+    background: color-mix(in srgb, var(--bad) 20%, transparent);
+    border-color: color-mix(in srgb, var(--bad) 65%, var(--muted));
   }
   .probgrid button:hover { border-color: var(--accent); }
-  .probgrid button.on { background: var(--accent); border-color: var(--accent); }
+  /* selection sits outside the dot's own ring, so the fill keeps meaning what it means */
+  .probgrid button.on { outline: 2px solid var(--ink); outline-offset: 1.5px; }
+  .probgrid button.on:not(.solved):not(.unsolved) { background: var(--accent); }
+  .gridnote { color: var(--muted); font-size: 11px; margin-top: 5px; }
   /* category toggles laid out like the confusion matrices below */
   .cattbl { border-collapse: collapse; }
   .cattbl th { font-weight: 400; color: var(--muted); font-size: 11px; padding: 2px 6px; }
@@ -114,6 +128,14 @@
   .desc mark.hlB { background: color-mix(in srgb, var(--accent-b) 30%, transparent); }
   .dropnote { color: var(--muted); font-size: 11px; border-top: 1px dashed var(--grid); margin-top: 10px; padding-top: 8px; }
   .question { color: var(--muted); font-style: italic; margin-top: 4px; }
+  .solrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+  .solrow .seg button { padding: 3px 10px; font-size: 12px; }
+  .badge {
+    font-size: 12px; border-radius: 999px; padding: 2px 10px; border: 1px solid currentColor;
+  }
+  .badge.good { color: var(--good); background: color-mix(in srgb, var(--good) 14%, transparent); }
+  .badge.bad  { color: var(--bad);  background: color-mix(in srgb, var(--bad) 14%, transparent); }
+  .badge.mixed { color: var(--accent-b); background: color-mix(in srgb, var(--accent-b) 14%, transparent); }
   .stats { color: var(--muted); font-size: 12px; margin: 2px 0 10px; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
   svg.graph { width: 100%; height: auto; display: block; }
@@ -204,6 +226,7 @@
     <div class="control">
       <h2>problem</h2>
       <table class="probgrid" id="probGrid"></table>
+      <div class="gridnote" id="gridNote" hidden></div>
     </div>
     <div class="control">
       <h2>navigate</h2>
@@ -228,8 +251,7 @@
     </div>
     <div class="control">
       <h2>hide variables</h2>
-      <label class="hint" style="display:block"><input type="checkbox" id="hideIsolated" checked> hide unconnected</label>
-      <label class="hint" style="display:block;margin-top:4px"><input type="checkbox" id="showOnlyNecessary"> show only necessary</label>
+      <label class="hint" style="display:block"><input type="checkbox" id="showOnlyNecessary"> show only necessary</label>
     </div>
   </div>
 
@@ -243,8 +265,15 @@
           <span class="desc" id="desc"></span>
           <span class="chip">[START]</span><span class="chip varA" id="chipA">A</span><span class="chip">[MID]</span><span class="chip varB" id="chipB">B</span><span class="chip">[END]</span>
         </div>
-        <div class="dropnote">the following problem sections are not passed to the model:</div>
+        <div class="dropnote">the following is not part of the probe's input:</div>
         <div class="question" id="question"></div>
+        <div class="solrow" id="solRow" hidden>
+          <span class="seg" id="solSeg">
+            <button data-sol="ref" class="on">reference solution</button>
+            <button data-sol="model">what the model wrote</button>
+          </span>
+          <span class="badge" id="solBadge" hidden></span>
+        </div>
         <div class="question" id="solution"></div>
         <div class="hint">click a variable in the graph to set <b>A</b> (highlights its mentions),
           click a second one to set <b>B</b>; click A again to clear.</div>
@@ -289,14 +318,13 @@ if (!DATA) {
   throw new Error('report_data.js did not load');
 }
 
-// show/hideIsolated are read from the buttons/checkbox at load so browser form-state
+// show/showOnlyNecessary are read from the buttons/checkbox at load so browser form-state
 // restoration can never desync the controls from what is drawn
-const state = { model: 'pre', prob: 0, show: {}, hideIsolated: true, showOnlyNecessary: false,
-                selA: null, selB: null, hover: null, scope: 'problem' };
+const state = { model: 'pre', prob: 0, show: {}, showOnlyNecessary: false,
+                selA: null, selB: null, hover: null, scope: 'problem', solView: 'ref' };
 document.querySelectorAll('.cattbl button').forEach(b => {
   state.show[b.dataset.cat] = b.classList.contains('on');
 });
-state.hideIsolated = document.getElementById('hideIsolated').checked;
 state.showOnlyNecessary = document.getElementById('showOnlyNecessary').checked;
 
 const svg = document.getElementById('graph');
@@ -354,10 +382,14 @@ function lineSample(cat, w = 46, h = 12) {
 }
 
 /* ---------- header meta ---------- */
+const solMeta = DATA.meta.solutions;
 document.getElementById('meta').innerHTML =
   `<dt>interpreted model</dt><dd><b>${esc(DATA.meta.model)}</b> (frozen GPT2-RoPE trained on iGSM-med) — its knowledge of “does A depend on B?” is read out by a V-probe at the end of the problem description</dd>` +
   `<dt>probe runs</dt><dd>pretrained: ${esc(DATA.meta.pretrainedRun)} · control: ${esc(DATA.meta.randomRun)} (same probe on a random-init model, seed ${DATA.meta.randomSeed})</dd>` +
-  `<dt>test data</dt><dd>${esc(DATA.meta.data)} — ${DATA.meta.nRowsTotal.toLocaleString()} (A, B) pairs over held-out problems; ${DATA.meta.nProblemsShown} problems shown · generated ${DATA.meta.created}</dd>`;
+  `<dt>test data</dt><dd>${esc(DATA.meta.data)} — ${DATA.meta.nRowsTotal.toLocaleString()} (A, B) pairs over held-out problems; ${DATA.meta.nProblemsShown} problems shown · generated ${DATA.meta.created}</dd>` +
+  (solMeta
+    ? `<dt>model solutions</dt><dd>${esc(solMeta.model || '(unknown model)')} solved ${solMeta.nShownCorrect}/${solMeta.nShown} of the problems shown here, ${(100 * solMeta.solveRate).toFixed(1)}% of all ${solMeta.nProblems} it was given — counted the strict way: the answer, every calculation and every dependency must be right</dd>`
+    : '');
 
 /* ---------- problem selection grid ---------- */
 function buildProbGrid() {
@@ -370,9 +402,14 @@ function buildProbGrid() {
     html += `<tr><th class="rowlab">${r === 0 ? 'problem' : ''}</th>`;
     for (const op of ops) {
       const idx = byOp.get(op)[r];
-      html += idx === undefined
-        ? '<td></td>'
-        : `<td><button data-prob="${idx}" title="seed ${DATA.problems[idx].seed} · ${DATA.problems[idx].params.length} variables"></button></td>`;
+      if (idx === undefined) { html += '<td></td>'; continue; }
+      const p = DATA.problems[idx];
+      const solved = p.model ? (p.model.correct ? 'solved' : 'unsolved') : '';
+      const solvedTitle = p.model
+        ? ` · model ${p.model.correct ? 'solved it' : 'got it wrong'}` : '';
+      html += `<td><button data-prob="${idx}" class="${solved}" ` +
+        `title="seed ${p.seed} · ${p.params.length} variables${solvedTitle}">` +
+        `${solved === 'unsolved' ? '×' : ''}</button></td>`;
     }
     html += '</tr>';
   }
@@ -383,6 +420,9 @@ function buildProbGrid() {
       state.prob = +b.dataset.prob; state.selA = state.selB = null; state.hover = null;
       renderAll();
     }));
+  const note = document.getElementById('gridNote');
+  note.textContent = 'fill: the model solved it · × : it did not';
+  note.hidden = !DATA.meta.solutions;
 }
 function syncProbGrid() {
   document.querySelectorAll('#probGrid button').forEach(b =>
@@ -395,6 +435,11 @@ document.querySelectorAll('#modelSeg button').forEach(b =>
     state.model = b.dataset.model;
     document.querySelectorAll('#modelSeg button').forEach(x => x.classList.toggle('on', x === b));
     renderAll();
+  }));
+document.querySelectorAll('#solSeg button').forEach(b =>
+  b.addEventListener('click', () => {
+    state.solView = b.dataset.sol;
+    renderSolution();
   }));
 document.querySelectorAll('#scopeSeg button').forEach(b =>
   b.addEventListener('click', () => {
@@ -409,9 +454,6 @@ document.querySelectorAll('.cattbl button').forEach(b => {
     b.classList.toggle('on', state.show[b.dataset.cat]);
     renderGraph(); renderMatrixView();
   });
-});
-document.getElementById('hideIsolated').addEventListener('change', e => {
-  state.hideIsolated = e.target.checked; renderGraph();
 });
 document.getElementById('showOnlyNecessary').addEventListener('change', e => {
   state.showOnlyNecessary = e.target.checked; renderGraph();
@@ -467,8 +509,6 @@ function renderGraph() {
 
   const visible = p.edges.filter(e => state.show[edgeCat(e)] &&
     (!state.showOnlyNecessary || (p.params[e[0]].nece && p.params[e[1]].nece)));
-  const connected = new Set();
-  visible.forEach(e => { connected.add(e[0]); connected.add(e[1]); });
 
   const defs = document.createElementNS(NS, 'defs');
   for (const cat of ['tp', 'fn', 'fp', 'tn']) {
@@ -530,7 +570,6 @@ function renderGraph() {
   }
 
   for (let i = 0; i < n; i++) {
-    if (state.hideIsolated && !connected.has(i)) continue;
     if (state.showOnlyNecessary && !p.params[i].nece) continue;
     const par = p.params[i];
     const pos = nodePos(i, n);
@@ -668,10 +707,35 @@ function renderProbeInput() {
   document.getElementById('desc').innerHTML = html;
 }
 
+/* ---------- reference solution vs. the model's own ---------- */
+function solutionBadge(m) {
+  if (m.correct) return { cls: 'good', text: `correct · answer ${m.answer}` };
+  if (m.answerCorrect) return { cls: 'mixed', text: `answer ${m.answer} right, a step is wrong` };
+  if (!m.answer) return { cls: 'bad', text: `no answer written (correct: ${m.goldAnswer})` };
+  return { cls: 'bad', text: `wrong · answered ${m.answer}, correct is ${m.goldAnswer}` };
+}
+function renderSolution() {
+  const p = prob(), el = document.getElementById('solution'), badge = document.getElementById('solBadge');
+  document.getElementById('solRow').hidden = !p.model;
+  const showModel = !!p.model && state.solView === 'model';
+  document.querySelectorAll('#solSeg button').forEach(b =>
+    b.classList.toggle('on', b.dataset.sol === (showModel ? 'model' : 'ref')));
+  if (!showModel) {
+    el.textContent = p.solution.join('. ') + '.';
+    badge.hidden = true;
+    return;
+  }
+  const b = solutionBadge(p.model);
+  el.textContent = p.model.solution || '(the model wrote nothing)';
+  badge.className = 'badge ' + b.cls;
+  badge.textContent = b.text;
+  badge.hidden = false;
+}
+
 function renderText() {
   const p = prob();
   document.getElementById('question').textContent = p.question;
-  document.getElementById('solution').textContent = p.solution.join('. ') + '.';
+  renderSolution();
   const nSkip = p.nPairsExpected - p.edges.length;
   document.getElementById('probStats').textContent =
     `difficulty: ${p.nOp} ops · seed ${p.seed} · ${p.params.length} variables · ` +
