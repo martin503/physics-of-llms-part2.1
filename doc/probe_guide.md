@@ -47,13 +47,13 @@ question, model's own solution, and whether it is right. Writes
 `<run-dir>/test_<dataset>/{generations.parquet,generations.json}`.
 
 ```bash
-uv run python -m src.probe.run solve --run-dir trained_probes/<pretrained-run> --data data/probe/vprobe_dep_eval_230 --n-problems 45
+uv run python -m src.probe.run solve --run-dir trained_probes/<pretrained-run> --data data/probe/vprobe_dep_eval_230 --n-problems 230
 ```
 
 **8. Interactive report.** Shows the solutions from step 7 if they are there.
 
 ```bash
-uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_230 --out results/probes/<dep_eval_230>
+uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_230 --out results/probes/<dep_eval_230> --n-problems 230
 ```
 
 `test` and `solve` read `--model-path` from the run's own `config.json`, so steps 5–7 take no

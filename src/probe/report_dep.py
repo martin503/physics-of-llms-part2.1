@@ -24,9 +24,9 @@ Encoding: **line style carries the true label** (solid = dependency exists, dash
 
 Wrong predictions additionally get an 'x' at the edge midpoint so correctness never rides
 on the red/green channel alone (the worst colour-vision-deficiency pair). True negatives
-dominate the natural distribution (~85-90%) and are hidden by default. Node fill encodes
-the parameter's owner layer in iGSM's category hierarchy; a dashed ink ring marks
-parameters necessary for the answer.
+dominate the natural distribution (~85-90%) and are hidden by default. Node fill encodes the
+category of what the parameter counts (iGSM's layer names); a dashed ink ring marks parameters
+necessary for the answer, and the one the question asks for is labelled in bold.
 
 Interactions: hover a node to isolate its pairs; **click** fills the query slots -- first
 click sets A (its mentions highlight in the problem text), second click sets B, matching
@@ -79,6 +79,14 @@ def _short_name(problem: Any, param: tuple[int, int, int, int]) -> str:
     return f'{owner}{"→" if kind == 0 else "⇒"}{attr}'
 
 
+def _rel(path: Path | str) -> str:
+    """`path` relative to the working directory when it sits inside it, else unchanged."""
+    try:
+        return Path(path).resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def _n_op_by_seed(data_dir: Path) -> dict[int, int]:
     """Map problem seed (`group`) -> reasoning-step count, from the dataset's own shards.
 
@@ -123,11 +131,17 @@ def _problem_payload(
             's': _short_name(problem, param),
             'f': problem.get_param(param),
             'nece': int(nece[p_idx]),
-            'layer': int(param[1]),  # owner layer i in the category hierarchy -> node colour
+            # a parameter counts things of one category; that category gives the node colour.
+            # Instance params (kind 0) count children of layer i, abstract ones the category k.
+            'layer': int(param[1]) + 1 if param[0] == 0 else int(param[3]),
             'kind': int(param[0]),  # 0 instance (→), 1 abstract (⇒)
         }
         for p_idx, param in enumerate(pp.all_param)
     ]
+    ques = tuple(int(x) for x in problem.ques_idx)
+    ques_index = next(
+        (n for n, param in enumerate(pp.all_param) if tuple(int(x) for x in param) == ques), -1
+    )
     n = len(pp.all_param)
     return {
         'seed': seed,
@@ -137,6 +151,7 @@ def _problem_payload(
         'question': str(problem.problem[-1]),
         'solution': [str(s) for s in problem.solution],
         'params': params,
+        'quesParam': ques_index,  # the parameter the question asks for
         'nPairsExpected': n * (n - 1),
         'edges': edges,
     }
@@ -262,9 +277,9 @@ def build_report(
         'meta': {
             'model': pre_cfg.get('model_path') or '(unknown model)',
             'randomSeed': rnd_cfg.get('seed'),
-            'data': str(data_dir),
-            'pretrainedRun': pretrained_run.name,
-            'randomRun': random_run.name,
+            'data': _rel(data_dir),
+            'pretrainedRun': _rel(pretrained_run),
+            'randomRun': _rel(random_run),
             'created': datetime.now().astimezone().isoformat(timespec='seconds'),
             'nRowsTotal': int(len(pre['label'])),
             'nProblemsShown': len(problems),

@@ -52,8 +52,8 @@
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
     padding: 12px 16px; margin-bottom: 14px;
   }
-  /* labelled header meta */
-  .meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; font-size: 13px; }
+  /* labelled footer meta */
+  .meta { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 13px; }
   .meta dt { color: var(--muted); }
   .meta dd { margin: 0; color: var(--ink-2); }
   .meta dd b { color: var(--ink); font-weight: 600; }
@@ -123,9 +123,9 @@
   .chip.varA { color: var(--accent); font-weight: 700; }
   .chip.varB { color: var(--accent-b); font-weight: 700; }
   .desc { margin: 8px 0; }
-  .desc mark { border-radius: 3px; color: inherit; padding: 0 1px; }
-  .desc mark.hlA { background: color-mix(in srgb, var(--accent) 28%, transparent); }
-  .desc mark.hlB { background: color-mix(in srgb, var(--accent-b) 30%, transparent); }
+  mark { border-radius: 3px; color: inherit; padding: 0 1px; }
+  mark.hlA { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+  mark.hlB { background: color-mix(in srgb, var(--accent-b) 30%, transparent); }
   .dropnote { color: var(--muted); font-size: 11px; border-top: 1px dashed var(--grid); margin-top: 10px; padding-top: 8px; }
   .question { color: var(--muted); font-style: italic; margin-top: 4px; }
   .solrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
@@ -144,6 +144,7 @@
   .node.selB circle { stroke: var(--accent-b); stroke-width: 3; }
   .node circle.necering { fill: none; stroke: var(--ink); stroke-width: 1; stroke-dasharray: 2 2; pointer-events: none; }
   .node text { font-size: 9px; fill: var(--ink-2); pointer-events: none; }
+  .node.ques text { font-weight: 700; fill: var(--ink); }
   .node.dim { opacity: 0.22; }
   .edge { fill: none; }
   .edgeg.dim { opacity: 0.06; }
@@ -211,9 +212,18 @@
 <body>
 <div class="wrap">
   <div class="topbar">
-    <h1>dep(A, B) V-probe — predictions vs ground truth</h1>
+    <h1>Physics of Language Models part 2.1 reproduction</h1>
     <button class="theme-btn" id="themeToggle" title="toggle light/dark theme"></button>
   </div>
+  <p class="lede">
+    Does a language model know variable dependencies in math problems before it is asked anything?
+    We trained a custom GPT-2 model and  <b>V-probe</b> on iGSM problems to extract what the model knows about the problem structure from its activations.
+    <b>dep(A, B)</b> asks “does variable A depend on B?”, for one pair of variables.
+  </p>
+  <p class="lede">
+    Every problem below is drawn as its dependency graph: variables are nodes, each tested pair an
+    arrow A → B, styled by the true answer and coloured by the probe's prediction. The same probe  trained for a random-init model acts as the control to verify probe training added little capability. We also show the trained model's generated solutions.
+  </p>
 
   <div class="card controls">
     <div class="control">
@@ -270,7 +280,7 @@
         <div class="solrow" id="solRow" hidden>
           <span class="seg" id="solSeg">
             <button data-sol="ref" class="on">reference solution</button>
-            <button data-sol="model">what the model wrote</button>
+            <button data-sol="model">model generation</button>
           </span>
           <span class="badge" id="solBadge" hidden></span>
         </div>
@@ -295,7 +305,7 @@
 
   <div class="card" style="margin-top:14px">
     <details id="matrixView" open>
-      <summary>full dependency matrix — rows: A, columns: B, cell: outcome of dep(A, B)</summary>
+      <summary>full dependency matrix (rows: A, columns: B, cell: outcome of dep(A, B))</summary>
       <div class="mx-legend" id="mxLegend"></div>
       <div class="mx-scroll" id="mxWrap"></div>
     </details>
@@ -369,6 +379,29 @@ function catStyles() {
   };
 }
 function layerColor(i) { return css('--lay-' + Math.min(i, 4)); }
+function nodeFill(par) {
+  return par.kind === 1
+    ? `url(#hatch-${par.layer})`  // whole category: striped
+    : `color-mix(in srgb, ${layerColor(par.layer)} 30%, ${css('--surface')})`;
+}
+// stripe fill for a layer's colour; ids are per layer, so one pattern serves every node of it
+function hatch(layer) {
+  const lc = layerColor(layer);
+  const pat = document.createElementNS(NS, 'pattern');
+  pat.setAttribute('id', `hatch-${layer}`);
+  pat.setAttribute('patternUnits', 'userSpaceOnUse');
+  pat.setAttribute('width', '3'); pat.setAttribute('height', '3');
+  pat.setAttribute('patternTransform', 'rotate(45)');
+  const bg = document.createElementNS(NS, 'rect');
+  bg.setAttribute('width', '3'); bg.setAttribute('height', '3');
+  bg.setAttribute('fill', css('--surface'));
+  const line = document.createElementNS(NS, 'line');
+  line.setAttribute('x1', '0.5'); line.setAttribute('y1', '0');
+  line.setAttribute('x2', '0.5'); line.setAttribute('y2', '3');
+  line.setAttribute('stroke', lc); line.setAttribute('stroke-width', '1.4');
+  pat.append(bg, line);
+  return pat;
+}
 
 // small inline SVG line sample (for legends and toggle buttons)
 function lineSample(cat, w = 46, h = 12) {
@@ -381,15 +414,24 @@ function lineSample(cat, w = 46, h = 12) {
     `<line x1="1" y1="${h/2}" x2="${w-1}" y2="${h/2}" stroke="${st.stroke}" stroke-width="${st.width}"${dash}/>${x}</svg>`;
 }
 
-/* ---------- header meta ---------- */
+/* ---------- footer meta ---------- */
 const solMeta = DATA.meta.solutions;
+const metaRows = [
+  ['interpreted model', `<b>${esc(DATA.meta.model)}</b>`],
+  ['pretrained probe', `<b>${esc(DATA.meta.pretrainedRun)}</b>`],
+  ['random control', `<b>${esc(DATA.meta.randomRun)}</b>, seed ${DATA.meta.randomSeed}`],
+  ['test data',
+    `<b>${esc(DATA.meta.data)}</b>, ${DATA.meta.nRowsTotal.toLocaleString()} (A, B) pairs, ` +
+    `<b>${DATA.meta.nProblemsShown}</b> problems shown`],
+];
+if (solMeta) {
+  metaRows.push(['model solutions',
+    `<b>${solMeta.nShownCorrect}/${solMeta.nShown}</b> of the problems shown solved, ` +
+    `<b>${(100 * solMeta.solveRate).toFixed(1)}%</b> of all ${solMeta.nProblems}`]);
+}
+metaRows.push(['generated', esc(DATA.meta.created)]);
 document.getElementById('meta').innerHTML =
-  `<dt>interpreted model</dt><dd><b>${esc(DATA.meta.model)}</b> (frozen GPT2-RoPE trained on iGSM-med) — its knowledge of “does A depend on B?” is read out by a V-probe at the end of the problem description</dd>` +
-  `<dt>probe runs</dt><dd>pretrained: ${esc(DATA.meta.pretrainedRun)} · control: ${esc(DATA.meta.randomRun)} (same probe on a random-init model, seed ${DATA.meta.randomSeed})</dd>` +
-  `<dt>test data</dt><dd>${esc(DATA.meta.data)} — ${DATA.meta.nRowsTotal.toLocaleString()} (A, B) pairs over held-out problems; ${DATA.meta.nProblemsShown} problems shown · generated ${DATA.meta.created}</dd>` +
-  (solMeta
-    ? `<dt>model solutions</dt><dd>${esc(solMeta.model || '(unknown model)')} solved ${solMeta.nShownCorrect}/${solMeta.nShown} of the problems shown here, ${(100 * solMeta.solveRate).toFixed(1)}% of all ${solMeta.nProblems} it was given — counted the strict way: the answer, every calculation and every dependency must be right</dd>`
-    : '');
+  metaRows.map(([term, val]) => `<dt>${term}</dt><dd>${val}</dd>`).join('');
 
 /* ---------- problem selection grid ---------- */
 function buildProbGrid() {
@@ -511,6 +553,7 @@ function renderGraph() {
     (!state.showOnlyNecessary || (p.params[e[0]].nece && p.params[e[1]].nece)));
 
   const defs = document.createElementNS(NS, 'defs');
+  for (const li of new Set(p.params.map(par => par.layer))) defs.appendChild(hatch(li));
   for (const cat of ['tp', 'fn', 'fp', 'tn']) {
     const m = document.createElementNS(NS, 'marker');
     m.setAttribute('id', `arrow-${cat}`);
@@ -574,12 +617,11 @@ function renderGraph() {
     const par = p.params[i];
     const pos = nodePos(i, n);
     const g = document.createElementNS(NS, 'g');
-    g.setAttribute('class', 'node');
+    g.setAttribute('class', i === p.quesParam ? 'node ques' : 'node');
     const c = document.createElementNS(NS, 'circle');
     c.setAttribute('cx', pos.x); c.setAttribute('cy', pos.y); c.setAttribute('r', nodeR);
-    const lc = layerColor(par.layer);
-    c.setAttribute('fill', `color-mix(in srgb, ${lc} 30%, ${css('--surface')})`);
-    c.setAttribute('stroke', lc);
+    c.setAttribute('fill', nodeFill(par));
+    c.setAttribute('stroke', layerColor(par.layer));
     g.appendChild(c);
     if (par.nece) {  // dashed ink ring: necessary for the answer
       const ring = document.createElementNS(NS, 'circle');
@@ -691,20 +733,37 @@ function placeTooltip(ev) {
 function hideTooltip() { tooltip.style.display = 'none'; }
 
 /* ---------- text panel: description + A/B substitution + highlighting ---------- */
-function renderProbeInput() {
+function selectedNames() {
   const p = prob();
-  const nameA = state.selA !== null ? p.params[state.selA].f : null;
-  const nameB = state.selB !== null ? p.params[state.selB].f : null;
-  document.getElementById('chipA').textContent = nameA || 'A';
-  document.getElementById('chipB').textContent = nameB || 'B';
-  let html = p.desc.map(esc).join('. ') + '.';
+  return [state.selA !== null ? p.params[state.selA].f : null,
+          state.selB !== null ? p.params[state.selB].f : null];
+}
+function highlight(text) {
+  const [nameA, nameB] = selectedNames();
+  let html = esc(text);
   // highlight B first, then A, so overlapping phrases prefer the A colour
   for (const [name, cls] of [[nameB, 'hlB'], [nameA, 'hlA']]) {
     if (!name) continue;
     const bare = esc(name.replace(/^each /, ''));
     if (bare) html = html.split(bare).join(`<mark class="${cls}">${bare}</mark>`);
   }
-  document.getElementById('desc').innerHTML = html;
+  return html;
+}
+// The question rephrases its parameter ("How many <attribute> does <owner> have?"), so no
+// reliable substring to mark: selecting the parameter it asks for marks the whole sentence.
+function highlightQuestion(text) {
+  const ques = prob().quesParam;
+  const cls = state.selA === ques ? 'hlA' : state.selB === ques ? 'hlB' : null;
+  return cls ? `<mark class="${cls}">${esc(text)}</mark>` : esc(text);
+}
+function renderProbeInput() {
+  const p = prob();
+  const [nameA, nameB] = selectedNames();
+  document.getElementById('chipA').textContent = nameA || 'A';
+  document.getElementById('chipB').textContent = nameB || 'B';
+  document.getElementById('desc').innerHTML = highlight(p.desc.join('. ') + '.');
+  document.getElementById('question').innerHTML = highlightQuestion(p.question);
+  renderSolution();
 }
 
 /* ---------- reference solution vs. the model's own ---------- */
@@ -721,12 +780,12 @@ function renderSolution() {
   document.querySelectorAll('#solSeg button').forEach(b =>
     b.classList.toggle('on', b.dataset.sol === (showModel ? 'model' : 'ref')));
   if (!showModel) {
-    el.textContent = p.solution.join('. ') + '.';
+    el.innerHTML = highlight(p.solution.join('. ') + '.');
     badge.hidden = true;
     return;
   }
   const b = solutionBadge(p.model);
-  el.textContent = p.model.solution || '(the model wrote nothing)';
+  el.innerHTML = highlight(p.model.solution || '(the model wrote nothing)');
   badge.className = 'badge ' + b.cls;
   badge.textContent = b.text;
   badge.hidden = false;
@@ -734,8 +793,6 @@ function renderSolution() {
 
 function renderText() {
   const p = prob();
-  document.getElementById('question').textContent = p.question;
-  renderSolution();
   const nSkip = p.nPairsExpected - p.edges.length;
   document.getElementById('probStats').textContent =
     `difficulty: ${p.nOp} ops · seed ${p.seed} · ${p.params.length} variables · ` +
@@ -752,16 +809,28 @@ function renderLegend() {
     `<svg width="${w}" height="12" viewBox="0 0 ${w} 12"><line x1="1" y1="6" x2="${w-9}" y2="6" stroke="currentColor" stroke-width="1.6"/><path d="M ${w-9} 2 L ${w-1} 6 L ${w-9} 10 z" fill="currentColor"/></svg>`;
   const solid = `<svg width="46" height="12"><line x1="1" y1="6" x2="45" y2="6" stroke="currentColor" stroke-width="2"/></svg>`;
   const dashed = `<svg width="46" height="12"><line x1="1" y1="6" x2="45" y2="6" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4"/></svg>`;
-  const dot = (color, ring) =>
-    `<svg width="16" height="16"><circle cx="8" cy="8" r="5" fill="color-mix(in srgb, ${color} 30%, var(--surface))" stroke="${color}" stroke-width="1.4"/>${ring ? '<circle cx="8" cy="8" r="7.4" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2"/>' : ''}</svg>`;
-  const layers = p.layers.map((name, i) =>
-    `<span class="lrow">${dot(layerColor(i), false)} ${esc(name)}</span>`).join('');
+  // striped == a whole category's total, plain == one element's count (same as the graph)
+  const dot = (color, { ring = false, striped = false } = {}) => {
+    const id = `lg-${color.replace(/[^a-z0-9]/gi, '')}`;
+    const stripes = `<defs><pattern id="${id}" patternUnits="userSpaceOnUse" width="3" height="3" patternTransform="rotate(45)">` +
+      `<rect width="3" height="3" fill="var(--surface)"/>` +
+      `<line x1="0.5" y1="0" x2="0.5" y2="3" stroke="${color}" stroke-width="1.4"/></pattern></defs>`;
+    const fill = striped ? `url(#${id})` : `color-mix(in srgb, ${color} 30%, var(--surface))`;
+    return `<svg width="16" height="16">${striped ? stripes : ''}` +
+      `<circle cx="8" cy="8" r="5" fill="${fill}" stroke="${color}" stroke-width="1.4"/>` +
+      `${ring ? '<circle cx="8" cy="8" r="7.4" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2"/>' : ''}</svg>`;
+  };
+  // only the categories this problem actually counts; the top one is never counted
+  const used = [...new Set(p.params.map(par => par.layer))].sort((a, b) => a - b);
+  const layers = used.map(i =>
+    `<span class="lrow">${dot(layerColor(i))} ${esc(p.layers[i])}</span>`).join('');
   document.getElementById('legend').innerHTML = `<table>
     <tr>
-      <th>true label<br>(line style)</th>
-      <th>prediction<br>(colour)</th>
+      <th>true label</th>
+      <th>prediction</th>
       <th>how to read</th>
-      <th>variables<br>(nodes)</th>
+      <th>variables</th>
+      <th>categories</th>
     </tr>
     <tr>
       <td>
@@ -770,13 +839,16 @@ function renderLegend() {
       </td>
       <td>
         <div class="lrow">${lineSample('tp')} correct</div>
-        <div class="lrow">${lineSample('fn')} wrong (marked ×)</div>
+        <div class="lrow">${lineSample('fn')} wrong</div>
       </td>
       <td>
         <div class="lrow">${arrow(46)} A → B: “A depends on B”</div>
-        <div class="lrow">label “X→Y”: count of Y per X (instance)</div>
-        <div class="lrow">label “X⇒Y”: total of category Y (abstract)</div>
-        <div class="lrow">${dot('var(--muted)', true)} necessary for the answer</div>
+        <div class="lrow">${dot('var(--muted)', { ring: true })} necessary for the answer</div>
+        <div class="lrow"><b>bold label</b> what the question asks for</div>
+      </td>
+      <td>
+        <div class="lrow">${dot('var(--muted)')} one element</div>
+        <div class="lrow">${dot('var(--muted)', { striped: true })} a category</div>
       </td>
       <td>${layers}</td>
     </tr>
@@ -837,7 +909,7 @@ function renderMatrixView() {
       const c = cat[a][b];
       const title = c === null
         ? (a === b ? 'diagonal (untested)' : 'untested pair')
-        : `${CAT_NAMES[c]} — dep(${p.params[a].s}, ${p.params[b].s})`;
+        : `${CAT_NAMES[c]}: dep(${p.params[a].s}, ${p.params[b].s})`;
       html += `<td class="${c || 'na'}" title="${esc(title)}"></td>`;
     }
     html += '</tr>';
