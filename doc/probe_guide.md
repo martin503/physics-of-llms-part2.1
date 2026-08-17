@@ -385,12 +385,15 @@ Parameters sit on a circle, each tested pair a directed edge A→B ("A depends o
 = true label (solid: dependency, dashed: none), colour = correctness (green right, red wrong,
 wrong also marked ×). True negatives start hidden. Hover a node to isolate its pairs, click to
 pin; a toggle switches pretrained ↔ random control; confusion matrices below, per problem or
-overall.
+overall. The problem is picked in two steps: a strip of difficulties, then the seeds generated at
+that difficulty. Two plots over difficulty close the page, both over the whole test set: the
+model's solve rate (strict, and counting the final answer alone), and each probe's MCC against
+the true labels.
 
 With solutions from `solve`, the problem text panel also toggles iGSM's reference solution ↔
 what the model wrote, badged with iGSM's strict verdict (answer, every calculation and every
-dependency), and the problem-selection dots fill green (solved) or red-× (not). Without them the
-page shows the reference solution alone.
+dependency), and the seed dots fill green (solved) or red-× (not). Without them the page shows
+the reference solution alone and leaves the solve-rate plot empty.
 
 ## Known gaps / TODOs
 

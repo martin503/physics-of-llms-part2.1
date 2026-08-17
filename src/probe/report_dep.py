@@ -30,10 +30,13 @@ necessary for the answer, and the one the question asks for is labelled in bold.
 
 Interactions: hover a node to isolate its pairs; **click** fills the query slots -- first
 click sets A (its mentions highlight in the problem text), second click sets B, matching
-the probe's ``[START] A [MID] B [END]`` input. A grid of radio buttons selects the problem
-(columns = difficulty as iGSM ``n_op``, rows = alternative seeds -- generate the dataset with
-``gen-data --uniform-difficulty`` to populate the grid). Confusion matrices (per problem or
-whole test set) and an n x n dependency-matrix view sit below the graph.
+the probe's ``[START] A [MID] B [END]`` input. The problem is picked in two steps -- a strip
+of difficulties (iGSM ``n_op``), then the seeds generated at that difficulty (generate the
+dataset with ``gen-data --uniform-difficulty`` so every difficulty has several). Confusion
+matrices (per problem or whole test set) and an n x n dependency-matrix view sit below the
+graph, and two plots over difficulty close the page: the model's solve rate (strict, and counting
+the final answer alone), and both probes' MCC against the true labels. The pretrained run's
+solutions are hidden while the random control is selected, so they cannot be read as its output.
 
 Data comes from the ``test`` command's saved predictions for *both* runs (pretrained +
 random control) on the *same* ``--dep-all-pairs`` dataset. Problems are regenerated from
@@ -158,16 +161,13 @@ def _problem_payload(
 
 
 def _attach_solutions(
-    problems: list[dict[str, Any]], run_dir: Path, data_dir: Path
+    problems: list[dict[str, Any]], rows: dict[int, dict[str, Any]], meta: dict[str, Any]
 ) -> dict[str, Any] | None:
     """Add each problem's model solution (`p['model']`) in place; return the solving metadata.
 
     Returns None when the run has no solutions for this dataset, which the page treats as
     "reference solution only". Problems `solve` did not cover keep `p['model'] = None`.
     """
-    from src.probe.solve import load_solutions
-
-    rows, meta = load_solutions(run_dir, data_dir)
     if not rows:
         return None
     for p in problems:
@@ -189,6 +189,48 @@ def _attach_solutions(
     }
 
 
+def _by_difficulty(
+    pre: dict[str, np.ndarray],
+    rnd: dict[str, np.ndarray],
+    n_op_by_seed: dict[int, int],
+    solutions: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Probe MCC and model solve rate per difficulty (`n_op`), one entry per op count.
+
+    The page's two trend plots read this. Both cover the whole dataset, not the problems the
+    selector shows: the MCCs over every (A, B) pair, the solve rates over every problem
+    `solve` covered (both rates are None for a difficulty it covered none of). `solveRate`
+    is iGSM's strict verdict, `answerRate` counts a right final answer whatever the steps did.
+    """
+    row_op = np.array([n_op_by_seed[int(g)] for g in pre['group']])
+    solved: dict[int, list[tuple[int, int]]] = {}
+    for row in solutions.values():
+        solved.setdefault(int(row['n_op']), []).append(
+            (int(bool(row['correct'])), int(bool(row['answer_correct'])))
+        )
+    out = []
+    for op in sorted(set(row_op.tolist())):
+        m = row_op == op
+        tried = solved.get(op, [])
+        n_strict = sum(strict for strict, _ in tried)
+        n_answer = sum(answer for _, answer in tried)
+        out.append(
+            {
+                'nOp': int(op),
+                'nPairs': int(m.sum()),
+                'nProblems': len(set(pre['group'][m].tolist())),
+                'mccPre': classification_metrics(pre['label'][m], pre['pred'][m])['mcc'],
+                'mccRand': classification_metrics(rnd['label'][m], rnd['pred'][m])['mcc'],
+                'nSolveTried': len(tried),
+                'nSolved': n_strict,
+                'nAnswerRight': n_answer,
+                'solveRate': n_strict / len(tried) if tried else None,
+                'answerRate': n_answer / len(tried) if tried else None,
+            }
+        )
+    return out
+
+
 def build_report(
     pretrained_run: Path | str,
     random_run: Path | str,
@@ -206,9 +248,11 @@ def build_report(
     Both runs must have been `test`ed on `data_dir` already (their saved prediction files
     must align row-for-row -- same dataset, same order -- which is asserted, not assumed).
     The report carries the first `n_problems` problems of the dataset, sorted by difficulty
-    (`n_op`) for the selection grid; overall confusion matrices/metrics are computed over
-    ALL rows, not just those problems.
+    (`n_op`) for the selector; overall confusion matrices/metrics and the difficulty curves
+    are computed over ALL rows, not just those problems.
     """
+    from src.probe.solve import load_solutions
+
     data_dir = Path(data_dir)
     pretrained_run, random_run = Path(pretrained_run), Path(random_run)
     pre = load_predictions(pretrained_run, data_dir)
@@ -270,8 +314,9 @@ def build_report(
             'problem %d: op=%d, %d params, %d pairs',
             seed, problems[-1]['nOp'], len(problems[-1]['params']), len(edges),
         )
-    problems.sort(key=lambda p: (p['nOp'], p['seed']))  # grid columns = difficulty
-    solutions_meta = _attach_solutions(problems, pretrained_run, data_dir)
+    problems.sort(key=lambda p: (p['nOp'], p['seed']))  # selector groups by difficulty
+    sol_rows, sol_meta = load_solutions(pretrained_run, data_dir)
+    solutions_meta = _attach_solutions(problems, sol_rows, sol_meta)
 
     payload = {
         'meta': {
@@ -286,6 +331,7 @@ def build_report(
             'solutions': solutions_meta,
         },
         'overall': overall,
+        'byDifficulty': _by_difficulty(pre, rnd, n_op_by_seed, sol_rows),
         'problems': problems,
     }
     out = Path(out) if out else Path('results/probes') / f'{datetime.now():%Y-%m-%d_%H%M%S}_dep'

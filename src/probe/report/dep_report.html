@@ -57,50 +57,72 @@
   .meta dt { color: var(--muted); }
   .meta dd { margin: 0; color: var(--ink-2); }
   .meta dd b { color: var(--ink); font-weight: 600; }
-  /* controls */
-  .controls { display: flex; flex-wrap: wrap; gap: 18px 36px; align-items: flex-start; }
-  .control h2 { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  /* controls: every column is a heading over two rows of the same height, so they line up */
+  .controls { --crow: 30px; --cgap: 6px; display: flex; flex-wrap: wrap; gap: 16px 32px; align-items: flex-start; }
+  .control { display: flex; flex-direction: column; gap: var(--cgap); }
+  .control h2 {
+    color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    margin: 0; height: 15px;
+  }
+  .crow { display: flex; align-items: center; gap: 10px; min-height: var(--crow); }
+  label.crow { gap: 5px; margin: 0; }
+  label.crow input { margin: 0; }
   .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .seg button {
     border: 0; background: transparent; color: var(--ink-2); padding: 5px 12px;
     font: inherit; cursor: pointer;
   }
   .seg button.on { background: var(--accent); color: #fff; }
-  .navgrid { display: flex; flex-direction: column; gap: 6px; }
-  /* problem grid: columns = op count, rows = seed slots */
-  .probgrid { border-collapse: collapse; }
-  .probgrid th {
-    font-weight: 400; color: var(--muted); font-size: 11px; padding: 2px 3px; text-align: center;
+  /* stacked so the two model choices take the same two rows as everything else */
+  .seg.vseg { flex-direction: column; height: calc(2 * var(--crow) + var(--cgap)); }
+  .seg.vseg button { flex: 1; text-align: left; padding: 0 12px; }
+  /* one label, an arrow on each side */
+  .navseg button { padding: 0 8px; font-size: 12px; }
+  .navseg button:hover { background: var(--chip-bg); color: var(--ink); }
+  .navseg .navlab {
+    display: inline-flex; align-items: center; justify-content: center; min-width: 108px;
+    padding: 0 4px; font-size: 12px; color: var(--ink-2); white-space: nowrap;
+    border-left: 1px solid var(--border); border-right: 1px solid var(--border);
   }
-  .probgrid th.rowlab { text-align: right; padding-right: 7px; }
-  .probgrid td { padding: 2px 3px; text-align: center; }
-  .probgrid button {
+  /* difficulty strip: gapless, so neighbouring difficulties are easy to hit */
+  .opstrip { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .opstrip button {
+    min-width: 25px; height: 26px; padding: 0 2px; border: 0; border-left: 1px solid var(--border);
+    background: transparent; color: var(--ink-2); font: 12px/1 inherit; cursor: pointer;
+  }
+  .opstrip button:first-child { border-left: 0; }
+  .opstrip button:hover { background: var(--chip-bg); color: var(--ink); }
+  .opstrip button.on { background: var(--accent); color: #fff; }
+  .opstrip .gap { display: inline-flex; align-items: center; padding: 0 5px; color: var(--muted); }
+  /* seeds of the selected difficulty, wrapping to a second balanced line when narrow */
+  .seedrow { display: flex; flex-direction: column; gap: 4px; }
+  .seedline { display: flex; gap: 7px; }
+  .seedrow button {
     width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--muted);
-    background: transparent; cursor: pointer; padding: 0; vertical-align: middle;
+    background: transparent; cursor: pointer; padding: 0;
     display: inline-flex; align-items: center; justify-content: center;
     font: 12px/1 inherit; color: var(--bad);
   }
   /* fill = did the model solve this problem (× repeats it without colour) */
-  .probgrid button.solved {
+  .seedrow button.solved {
     background: color-mix(in srgb, var(--good) 32%, transparent);
     border-color: color-mix(in srgb, var(--good) 65%, var(--muted));
   }
-  .probgrid button.unsolved {
+  .seedrow button.unsolved {
     background: color-mix(in srgb, var(--bad) 20%, transparent);
     border-color: color-mix(in srgb, var(--bad) 65%, var(--muted));
   }
-  .probgrid button:hover { border-color: var(--accent); }
+  .seedrow button:hover { border-color: var(--accent); }
   /* selection sits outside the dot's own ring, so the fill keeps meaning what it means */
-  .probgrid button.on { outline: 2px solid var(--ink); outline-offset: 1.5px; }
-  .probgrid button.on:not(.solved):not(.unsolved) { background: var(--accent); }
-  .gridnote { color: var(--muted); font-size: 11px; margin-top: 5px; }
+  .seedrow button.on { outline: 2px solid var(--ink); outline-offset: 1.5px; }
+  .seedrow button.on:not(.solved):not(.unsolved) { background: var(--accent); }
   /* category toggles laid out like the confusion matrices below */
-  .cattbl { border-collapse: collapse; }
-  .cattbl th { font-weight: 400; color: var(--muted); font-size: 11px; padding: 2px 6px; }
-  .cattbl td { padding: 2px; }
+  .cattbl { display: flex; flex-direction: column; gap: var(--cgap); }
+  .cattbl .crow { gap: 4px; }
+  .cattbl .rowlab { color: var(--muted); font-size: 11px; width: 44px; }
   .cattbl button {
     display: flex; flex-direction: column; align-items: center; gap: 2px;
-    width: 74px; padding: 5px 4px; border: 1px solid var(--border); border-radius: 7px;
+    width: 74px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 7px;
     background: transparent; color: var(--ink-2); font: 12px/1.2 inherit; cursor: pointer;
   }
   .cattbl button.on { background: var(--chip-bg); border-color: var(--muted); color: var(--ink); }
@@ -206,6 +228,16 @@
   .mx td.na { background: var(--chip-bg); }
   .mx-legend { display: flex; gap: 16px; font-size: 12px; margin-top: 8px; align-items: center; }
   .mx-legend .sw { width: 13px; height: 13px; display: inline-block; border-radius: 3px; margin-right: 5px; vertical-align: -2px; }
+  /* difficulty trends */
+  .plots { display: flex; flex-wrap: wrap; gap: 16px; }
+  .plot { flex: 1 1 420px; min-width: 0; margin: 0; }
+  .plot h3 { margin: 0 0 6px; font-size: 13px; }
+  .plot p { margin: 6px 0 0; color: var(--ink-2); font-size: 12.5px; }
+  .plot svg { width: 100%; height: auto; display: block; }
+  .plot .axis { stroke: var(--grid); stroke-width: 1; }
+  .plot .tick { fill: var(--muted); font-size: 10px; }
+  .plot .ylab { fill: var(--muted); font-size: 11px; }
+  .plot .empty { fill: var(--muted); font-size: 12px; }
   @media (max-width: 1020px) { .main { flex-direction: column; } .text-panel { max-height: 480px; } }
 </style>
 </head>
@@ -228,40 +260,42 @@
   <div class="card controls">
     <div class="control">
       <h2>probed model</h2>
-      <span class="seg" id="modelSeg">
+      <span class="seg vseg" id="modelSeg">
         <button data-model="pre" class="on">pretrained</button>
         <button data-model="rand">random control</button>
       </span>
     </div>
     <div class="control">
-      <h2>problem</h2>
-      <table class="probgrid" id="probGrid"></table>
-      <div class="gridnote" id="gridNote" hidden></div>
-    </div>
-    <div class="control">
-      <h2>navigate</h2>
-      <div class="navgrid">
-        <span class="seg">
-          <button id="prevProb" title="previous problem at this difficulty">▲ problem</button>
-          <button id="nextProb" title="next problem at this difficulty">problem ▼</button>
+      <h2>select a problem</h2>
+      <div class="crow">
+        <span class="seg navseg">
+          <button id="prevDiff" title="one difficulty easier">◀</button>
+          <span class="navlab">problem difficulty</span>
+          <button id="nextDiff" title="one difficulty harder">▶</button>
         </span>
-        <span class="seg">
-          <button id="prevDiff" title="previous difficulty">◀ difficulty</button>
-          <button id="nextDiff" title="next difficulty">difficulty ▶</button>
+        <div class="opstrip" id="opStrip"></div>
+      </div>
+      <div class="crow">
+        <span class="seg navseg">
+          <button id="prevProb" title="previous seed at this difficulty">◀</button>
+          <span class="navlab">problem seed</span>
+          <button id="nextProb" title="next seed at this difficulty">▶</button>
         </span>
+        <div class="seedrow" id="seedRow"></div>
       </div>
     </div>
     <div class="control">
       <h2>shown outcomes</h2>
-      <table class="cattbl">
-        <tr><th></th><th>pred 1</th><th>pred 0</th></tr>
-        <tr><th>dep&thinsp;=&thinsp;1</th><td><button data-cat="tp" class="on"></button></td><td><button data-cat="fn" class="on"></button></td></tr>
-        <tr><th>dep&thinsp;=&thinsp;0</th><td><button data-cat="fp" class="on"></button></td><td><button data-cat="tn"></button></td></tr>
-      </table>
+      <div class="cattbl">
+        <div class="crow"><span class="rowlab">dep&thinsp;=&thinsp;1</span>
+          <button data-cat="tp" class="on"></button><button data-cat="fn" class="on"></button></div>
+        <div class="crow"><span class="rowlab">dep&thinsp;=&thinsp;0</span>
+          <button data-cat="fp" class="on"></button><button data-cat="tn"></button></div>
+      </div>
     </div>
     <div class="control">
       <h2>hide variables</h2>
-      <label class="hint" style="display:block"><input type="checkbox" id="showOnlyNecessary"> show only necessary</label>
+      <label class="crow hint"><input type="checkbox" id="showOnlyNecessary"> show only necessary</label>
     </div>
   </div>
 
@@ -309,6 +343,27 @@
       <div class="mx-legend" id="mxLegend"></div>
       <div class="mx-scroll" id="mxWrap"></div>
     </details>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2>Difficulty trends over the whole test set</h2>
+    <div class="plots">
+      <figure class="plot">
+        <h3>How often the model solves the problem itself</h3>
+        <svg id="plotSolve" viewBox="0 0 520 230" role="img"
+             aria-label="model solve rate by difficulty"></svg>
+        <p>Share of problems the model's own generated solution gets right, under iGSM's strict
+          verdict (every step and the answer) and counting the final answer alone.</p>
+      </figure>
+      <figure class="plot">
+        <h3>How often the probe's prediction matches the true label (MCC)</h3>
+        <svg id="plotMcc" viewBox="0 0 520 230" role="img"
+             aria-label="probe MCC by difficulty"></svg>
+        <p>How well each probe's dep(A, B) answers match the real dependencies of problems it
+          never saw, not how well it fits its training data. MCC is 1 for a perfect probe, 0 for
+          random predictions and below 0 for ones that are worse than random. dep probes don't see the problem questions, so flat lines are expected here.</p>
+      </figure>
+    </div>
   </div>
 
   <div class="card" style="margin-top:14px">
@@ -433,43 +488,68 @@ metaRows.push(['generated', esc(DATA.meta.created)]);
 document.getElementById('meta').innerHTML =
   metaRows.map(([term, val]) => `<dt>${term}</dt><dd>${val}</dd>`).join('');
 
-/* ---------- problem selection grid ---------- */
-function buildProbGrid() {
-  const ops = [...new Set(DATA.problems.map(p => p.nOp))].sort((a, b) => a - b);
-  const byOp = new Map(ops.map(op => [op, []]));
-  DATA.problems.forEach((p, i) => byOp.get(p.nOp).push(i));
-  const nRows = Math.max(...ops.map(op => byOp.get(op).length));
-  let html = '<tr><th class="rowlab">ops:</th>' + ops.map(op => `<th>${op}</th>`).join('') + '</tr>';
-  for (let r = 0; r < nRows; r++) {
-    html += `<tr><th class="rowlab">${r === 0 ? 'problem' : ''}</th>`;
-    for (const op of ops) {
-      const idx = byOp.get(op)[r];
-      if (idx === undefined) { html += '<td></td>'; continue; }
-      const p = DATA.problems[idx];
-      const solved = p.model ? (p.model.correct ? 'solved' : 'unsolved') : '';
-      const solvedTitle = p.model
-        ? ` · model ${p.model.correct ? 'solved it' : 'got it wrong'}` : '';
-      html += `<td><button data-prob="${idx}" class="${solved}" ` +
-        `title="seed ${p.seed} · ${p.params.length} variables${solvedTitle}">` +
-        `${solved === 'unsolved' ? '×' : ''}</button></td>`;
-    }
-    html += '</tr>';
+/* ---------- problem selection: a difficulty strip over the seeds of that difficulty ---------- */
+const narrow = matchMedia('(max-width: 1100px)');
+
+function selectProblem(idx) {
+  state.prob = idx; state.selA = state.selB = null; state.hover = null;
+  renderAll();
+}
+// on a narrow screen the strip keeps the ends and the current difficulty's neighbours: 1 … 7 8 9 … 23
+function shownOps(ops, cur) {
+  if (!narrow.matches || ops.length <= 8) return ops;
+  const i = ops.indexOf(cur);
+  const keep = new Set([ops[0], ops[ops.length - 1], ops[i - 1], ops[i], ops[i + 1]]);
+  return ops.filter(op => keep.has(op));
+}
+function renderPicker() {
+  const { ops, byOp } = opsAndGroups();
+  const cur = prob().nOp;
+  const shown = shownOps(ops, cur);
+  let html = '', prevIdx = -1;
+  for (const op of shown) {
+    const i = ops.indexOf(op);
+    if (prevIdx >= 0 && i > prevIdx + 1) html += '<span class="gap">…</span>';
+    html += `<button data-op="${op}" class="${op === cur ? 'on' : ''}" ` +
+      `title="${byOp.get(op).length} problems of ${op} reasoning steps">${op}</button>`;
+    prevIdx = i;
   }
-  const grid = document.getElementById('probGrid');
-  grid.innerHTML = html;
-  grid.querySelectorAll('button').forEach(b =>
+  const strip = document.getElementById('opStrip');
+  strip.innerHTML = html;
+  strip.querySelectorAll('button').forEach(b =>
     b.addEventListener('click', () => {
-      state.prob = +b.dataset.prob; state.selA = state.selB = null; state.hover = null;
-      renderAll();
+      const list = byOp.get(+b.dataset.op);
+      selectProblem(list[Math.min(seedIndex(), list.length - 1)]);
     }));
-  const note = document.getElementById('gridNote');
-  note.textContent = 'fill: the model solved it · × : it did not';
-  note.hidden = !DATA.meta.solutions;
+
+  const seeds = byOp.get(cur);
+  const perLine = narrow.matches && seeds.length > 6 ? Math.ceil(seeds.length / 2) : seeds.length;
+  const dot = idx => {
+    const p = DATA.problems[idx];
+    // the solutions belong to the pretrained model; under the control they would read as its own
+    const m = state.model === 'pre' && p.model;
+    const solved = m ? (m.correct ? 'solved' : 'unsolved') : '';
+    const how = m ? ` · the model ${m.correct ? 'solved it' : 'got it wrong'}` : '';
+    return `<button data-prob="${idx}" class="${solved}${idx === state.prob ? ' on' : ''}" ` +
+      `title="seed ${p.seed} · ${p.params.length} variables${how}">` +
+      `${solved === 'unsolved' ? '×' : ''}</button>`;
+  };
+  let lines = '';
+  for (let i = 0; i < seeds.length; i += perLine) {
+    lines += `<div class="seedline">${seeds.slice(i, i + perLine).map(dot).join('')}</div>`;
+  }
+  const row = document.getElementById('seedRow');
+  row.innerHTML = lines;
+  row.querySelectorAll('button').forEach(b =>
+    b.addEventListener('click', () => selectProblem(+b.dataset.prob)));
 }
-function syncProbGrid() {
-  document.querySelectorAll('#probGrid button').forEach(b =>
-    b.classList.toggle('on', +b.dataset.prob === state.prob));
+// position of the current problem among the seeds of its difficulty, kept when difficulty changes
+function seedIndex() {
+  const { byOp } = opsAndGroups();
+  const list = byOp.get(prob().nOp);
+  return Math.min(list.indexOf(state.prob), list.length - 1);
 }
+narrow.addEventListener('change', renderPicker);
 
 /* ---------- controls ---------- */
 document.querySelectorAll('#modelSeg button').forEach(b =>
@@ -490,7 +570,10 @@ document.querySelectorAll('#scopeSeg button').forEach(b =>
     renderMatrices();
   }));
 document.querySelectorAll('.cattbl button').forEach(b => {
-  b.innerHTML = `${lineSample(b.dataset.cat)}<span>${CAT_NAMES[b.dataset.cat]}</span>`;
+  const cat = b.dataset.cat;
+  b.innerHTML = `${lineSample(cat)}<span>${CAT_NAMES[cat]}</span>`;
+  b.title = `${cat[0] === 't' ? 'correct' : 'wrong'}: the probe predicts ` +
+    `${'tp fp'.includes(cat) ? '1' : '0'} where the true label is ${'tp fn'.includes(cat) ? '1' : '0'}`;
   b.addEventListener('click', () => {
     state.show[b.dataset.cat] = !state.show[b.dataset.cat];
     b.classList.toggle('on', state.show[b.dataset.cat]);
@@ -775,8 +858,10 @@ function solutionBadge(m) {
 }
 function renderSolution() {
   const p = prob(), el = document.getElementById('solution'), badge = document.getElementById('solBadge');
-  document.getElementById('solRow').hidden = !p.model;
-  const showModel = !!p.model && state.solView === 'model';
+  // only the pretrained run wrote solutions; offering them beside the control invites misreading
+  const model = state.model === 'pre' ? p.model : null;
+  document.getElementById('solRow').hidden = !model;
+  const showModel = !!model && state.solView === 'model';
   document.querySelectorAll('#solSeg button').forEach(b =>
     b.classList.toggle('on', b.dataset.sol === (showModel ? 'model' : 'ref')));
   if (!showModel) {
@@ -784,8 +869,8 @@ function renderSolution() {
     badge.hidden = true;
     return;
   }
-  const b = solutionBadge(p.model);
-  el.innerHTML = highlight(p.model.solution || '(the model wrote nothing)');
+  const b = solutionBadge(model);
+  el.innerHTML = highlight(model.solution || '(the model wrote nothing)');
   badge.className = 'badge ' + b.cls;
   badge.textContent = b.text;
   badge.hidden = false;
@@ -928,15 +1013,98 @@ function mxColor(c) {
            fn: bad, fp: `color-mix(in srgb, ${bad} 30%, var(--surface))` }[c];
 }
 
+/* ---------- difficulty trends ---------- */
+// series: [{name, colour, dash, points: [[x, y], ...]}]; x is a difficulty, y is in [yMin, 1]
+function linePlot(el, series, { yMin = 0, yTitle = '' } = {}) {
+  const W = 520, H = 230, L = 44, R = 10, T = 10, B = 34;
+  const xs = DATA.byDifficulty.map(d => d.nOp);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  // the band above 1 is headroom for the legend, so it never sits on a line
+  const yTop = 1 + 0.14 * series.length;
+  const px = v => L + (W - L - R) * (x1 === x0 ? 0.5 : (v - x0) / (x1 - x0));
+  const py = v => T + (H - T - B) * (1 - (v - yMin) / (yTop - yMin));
+  const parts = [];
+  if (!series.some(s => s.points.length)) {
+    el.innerHTML = `<text class="empty" x="${W / 2}" y="${H / 2}" text-anchor="middle">` +
+      'this run has no model solutions</text>';
+    return;
+  }
+  for (let v = yMin; v <= 1.001; v += 0.25) { // horizontal gridlines + y ticks
+    const y = py(v);
+    parts.push(`<line class="axis" x1="${L}" y1="${y}" x2="${W - R}" y2="${y}"/>`,
+      `<text class="tick" x="${L - 7}" y="${y + 3}" text-anchor="end">${v.toFixed(2)}</text>`);
+  }
+  const step = xs.length > 14 ? 2 : 1;        // x ticks, thinned when there are many difficulties
+  xs.forEach((v, i) => {
+    if (i % step) return;
+    parts.push(`<line class="axis" x1="${px(v)}" y1="${py(yMin)}" x2="${px(v)}" y2="${py(yTop)}"/>`,
+      `<text class="tick" x="${px(v)}" y="${H - B + 15}" text-anchor="middle">${v}</text>`);
+  });
+  parts.push(`<text class="ylab" transform="translate(11 ${(H - B + T) / 2}) rotate(-90)" ` +
+    `text-anchor="middle">${yTitle}</text>`);
+  parts.push(`<text class="tick" x="${(W + L) / 2}" y="${H - 4}" text-anchor="middle">` +
+    'reasoning steps in the problem</text>');
+  for (const s of series) {
+    const dash = s.dash ? ` stroke-dasharray="${s.dash}"` : '';
+    const d = s.points.map(([x, y], i) => `${i ? 'L' : 'M'} ${px(x)} ${py(y)}`).join(' ');
+    parts.push(`<path d="${d}" fill="none" stroke="${s.colour}" stroke-width="2"${dash}/>`);
+    for (const [x, y, label] of s.points) {
+      parts.push(`<circle cx="${px(x)}" cy="${py(y)}" r="2.6" fill="${s.colour}">` +
+        `<title>${esc(label)}</title></circle>`);
+    }
+  }
+  // legend in the headroom band, right-aligned inside the plot frame
+  series.forEach((s, i) => {
+    const y = T + 9 + i * 14, right = W - R - 6;
+    const dash = s.dash ? ` stroke-dasharray="${s.dash}"` : '';
+    parts.push(
+      `<text class="tick" x="${right}" y="${y + 3}" text-anchor="end">${esc(s.name)}</text>`,
+      `<line x1="${right - textWidth(s.name) - 30}" y1="${y}" ` +
+      `x2="${right - textWidth(s.name) - 6}" y2="${y}" stroke="${s.colour}" ` +
+      `stroke-width="2"${dash}/>`);
+  });
+  el.innerHTML = parts.join('');
+}
+// the legend samples sit left of right-aligned labels, so their length has to be estimated
+function textWidth(text) { return 5.1 * text.length; }
+function renderTrends() {
+  const rows = DATA.byDifficulty;
+  const accent = css('--accent'), muted = css('--muted'), other = css('--accent-b');
+  const solved = rows.filter(d => d.solveRate !== null);
+  linePlot(document.getElementById('plotSolve'), [
+    {
+      name: 'answer and every step right', colour: accent, dash: null,
+      points: solved.map(d =>
+        [d.nOp, d.solveRate, `${d.nOp} steps: ${d.nSolved}/${d.nSolveTried} fully right`]),
+    },
+    {
+      name: 'final answer right', colour: other, dash: '5 4',
+      points: solved.map(d =>
+        [d.nOp, d.answerRate, `${d.nOp} steps: ${d.nAnswerRight}/${d.nSolveTried} answered right`]),
+    },
+  ], { yTitle: 'share of problems' });
+  const mccMin = Math.min(0, ...rows.flatMap(d => [d.mccPre, d.mccRand]));
+  const mcc = [
+    { name: 'pretrained', colour: accent, dash: null, key: 'mccPre' },
+    { name: 'random control', colour: muted, dash: '5 4', key: 'mccRand' },
+  ];
+  linePlot(document.getElementById('plotMcc'), mcc.map(s => ({
+    ...s,
+    points: rows.map(d =>
+      [d.nOp, d[s.key], `${d.nOp} steps, ${s.name}: MCC ${d[s.key].toFixed(3)} ` +
+        `over ${d.nPairs.toLocaleString()} pairs`]),
+  })), { yMin: Math.min(0, Math.floor(mccMin * 4) / 4), yTitle: 'MCC' });
+}
+
 function renderAll() {
-  syncProbGrid();
+  renderPicker();
   renderText();
   renderGraph();
   renderLegend();
   renderMatrices();
   renderMatrixView();
+  renderTrends();
 }
-buildProbGrid();
 renderAll();
 </script>
 </body>
