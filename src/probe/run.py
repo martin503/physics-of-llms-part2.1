@@ -407,6 +407,50 @@ def test_probe(
     )
 
 
+@app.command(name='solve')
+def solve(
+    run_dir: Annotated[
+        Path,
+        typer.Option(
+            '--run-dir',
+            help='Probe run dir of the pretrained model; its config.json names the model '
+            'that writes the solutions.',
+        ),
+    ],
+    data: Annotated[
+        Path, typer.Option('--data', help='The eval dataset that run was `test`ed on.')
+    ],
+    n_problems: Annotated[
+        int | None,
+        typer.Option(
+            '--n-problems',
+            help='Solve only the first N problems of the dataset (default: all). Pass the '
+            "number `report-dep` shows to solve exactly the report's problems.",
+        ),
+    ] = None,
+    batch_size: Annotated[int, typer.Option('--batch-size')] = 16,
+    max_new_tokens: Annotated[int, typer.Option('--max-new-tokens')] = 1024,
+    device: Annotated[str, typer.Option('--device')] = 'cuda',
+    overwrite: Annotated[
+        bool, typer.Option('--overwrite', help='Replace solutions already saved for this pair.')
+    ] = False,
+) -> None:
+    """Let the model write and score one solution per problem, without any probe tokens. Writes
+    `generations.parquet` + `generations.json` next to the run's predictions
+    (`<run-dir>/test_<dataset>/`); `report-dep` shows them if they are there."""
+    from src.probe.solve import solve_run
+
+    _setup_logging()
+    meta = solve_run(
+        run_dir, data, n_problems=n_problems, batch_size=batch_size,
+        max_new_tokens=max_new_tokens, device=device, overwrite=overwrite,
+    )
+    typer.echo(
+        f'solved {meta["n_correct"]}/{meta["n_problems"]} '
+        f'(rate {meta["solve_rate"]:.3f}, answer-only {meta["answer_solve_rate"]:.3f})'
+    )
+
+
 @app.command(name='report-dep')
 def report_dep(
     pretrained_run: Annotated[

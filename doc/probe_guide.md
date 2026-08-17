@@ -5,7 +5,7 @@ Reference for `src/probe/`. Reproduces the probing methodology of *Physics of LM
 
 ## TL;DR: the `dep(A, B)` pipeline
 
-Seven commands, start to finish. Training draws problem seeds `0..19999`; the eval set starts at
+Eight commands, start to finish. Training draws problem seeds `0..19999`; the eval set starts at
 1,000,000, so the two ranges don't overlap. Nothing checks this for you.
 
 **1. Training queries.** ~2.5 min on 8 workers; 9.91 queries/problem, so ~198k.
@@ -42,15 +42,23 @@ uv run python -m src.probe.run test --run-dir trained_probes/<pretrained-run> --
 uv run python -m src.probe.run test --run-dir trained_probes/<random-run> --data data/probe/vprobe_dep_eval_230
 ```
 
-**7. Interactive report.**
+**7. Let the model solve the problems.** Optional. No probe tokens, no probe; just the plain
+question, model's own solution, and whether it is right. Writes
+`<run-dir>/test_<dataset>/{generations.parquet,generations.json}`.
+
+```bash
+uv run python -m src.probe.run solve --run-dir trained_probes/<pretrained-run> --data data/probe/vprobe_dep_eval_230 --n-problems 45
+```
+
+**8. Interactive report.** Shows the solutions from step 7 if they are there.
 
 ```bash
 uv run python -m src.probe.run report-dep --pretrained-run trained_probes/<pretrained-run> --random-run trained_probes/<random-run> --data data/probe/vprobe_dep_eval_230 --out results/probes/<dep_eval_230>
 ```
 
-`test` reads `--model-path` from each run's own `config.json`, so steps 5–6 take no model
-arguments; the random control's transformer is its saved `lm_random_init.safetensors`, not a
-re-seeded rebuild (see "Testing a trained probe" below).
+`test` and `solve` read `--model-path` from the run's own `config.json`, so steps 5–7 take no
+model arguments; the random control's transformer is its saved `lm_random_init.safetensors`, not
+a re-seeded rebuild (see "Testing a trained probe" below).
 
 ### Why these settings
 
@@ -87,13 +95,57 @@ re-seeded rebuild (see "Testing a trained probe" below).
 | `vprobe.py` | The probe: frozen LM + rank-8 embedding delta + linear head at `[END]`; save/load of the trainable parts and the LM they pair with. |
 | `vprobe_train.py` | Training loop: group split, length-bucketed batches, epoch loop, reported metrics. |
 | `evaluate.py` | Test-time evaluation: rebuild a saved probe from its run dir, predict on a held-out offline dataset, save per-query predictions + metrics into the run dir. |
+| `solve.py` | The same problems without any probe: the model writes a solution, iGSM's `true_correct` scores it. |
 | `report_dep.py` | Builds the `dep(A, B)` report's data (`report_data.js`) and copies the UI beside it; dependency graph of predictions vs ground truth, pretrained/random toggle, confusion matrices. |
 | `report/dep_report.html` | That UI: one static page, edited directly, that reads whatever `report_data.js` sits next to it. |
-| `run.py` | Typer CLI: `gen-data`, `vprobe`, `test`, `report-dep`. |
+| `run.py` | Typer CLI: `gen-data`, `vprobe`, `test`, `solve`, `report-dep`. |
 
 Test coverage (and the model-dependent code it deliberately skips): [../tests/README.md](../tests/README.md).
 
 ## Data flow
+
+### The pipeline (TL;DR commands as a chart)
+
+Rounded boxes are commands, cylinders files. Everything downstream of `gen-data` addresses
+problems by seed, so any step can regenerate the problem text it needs.
+
+```mermaid
+flowchart TD
+    GD1(["gen-data<br/>seeds 0..19,999"]) --> TD[("training queries")]
+    GD2(["gen-data --dep-all-pairs<br/>seeds 1,000,000.."]) --> ED[("test queries")]
+
+    LM[("pretrained LM (frozen)")] --> VP
+    TD --> VP(["vprobe"])
+    TD --> VR(["vprobe --random-model"])
+    VP --> RD1[("run dir<br/>probe.pt, config.json")]
+    VR --> RD2[("run dir<br/>probe.pt, config.json,<br/>lm_random_init.safetensors")]
+
+    ED --> TS1(["test"])
+    RD1 --> TS1 --> PR1[("predictions.parquet")]
+    ED --> TS2(["test"])
+    RD2 --> TS2 --> PR2[("predictions.parquet")]
+
+    ED --> SV(["solve<br/>no probe, plain question"])
+    RD1 --> SV --> SO[("generations.parquet")]
+
+    PR1 --> REP(["report-dep"])
+    PR2 --> REP
+    SO --> REP
+    REP --> OUT[("out dir<br/>report_data.js")]
+    UI[("repo<br/>report/dep_report.html")] -->|copied unchanged| IDX[("out dir<br/>index.html")]
+    OUT -->|loaded as a script| IDX
+
+    classDef cmd stroke:#7c3aed,stroke-width:3px;
+    classDef art stroke:#0ea5e9,stroke-width:3px;
+    class GD1,GD2,VP,VR,TS1,TS2,SV,REP cmd
+    class TD,ED,LM,RD1,RD2,PR1,PR2,SO,OUT,UI,IDX art
+```
+
+`report-dep` generates only `report_data.js`; `index.html` is the static page copied beside it.
+`solve` takes the model from the pretrained run's `config.json`, which is why its solutions land
+beside that run's predictions rather than beside the dataset.
+
+### Per problem data flow
 
 ```mermaid
 flowchart TD
@@ -108,7 +160,8 @@ flowchart TD
     classDef vp stroke:#7c3aed,stroke-width:3px;
     class VI,VH vp
 ```
-* seed is used for random model init  
+* seed is used for random model init.  
+  ⚠︎ problem generation uses conscutive seeds from --starting-seed
 * split = train/val split (20% of problems for val)  
 * op = reasoning step count (1..max_op, default 23)
 
@@ -116,8 +169,8 @@ flowchart TD
 
 From iGSM's `Problem` class (`iGSM/math_gen/problem_gen.py`):
 
-- `lora_label(keys)` → `(1 + n_steps, n_param, n_keys)` for `nece, known, can_next, nece_next,
-  val`. Axis 0 = reasoning step (row `i_` = state after the first `i_` solution sentences),
+- `lora_label(keys)` → `(1 + n_steps, n_param, n_keys)` for `nece, known, can_next, nece_next, val`.  
+  Axis 0 = reasoning step (row `i_` = state after the first `i_` solution sentences),  
   axis 1 = `all_param`.
 - `lora_label2('dep')` → `(n_param, n_param)` pairwise dependency matrix.
 
@@ -333,6 +386,11 @@ Parameters sit on a circle, each tested pair a directed edge A→B ("A depends o
 wrong also marked ×). True negatives start hidden. Hover a node to isolate its pairs, click to
 pin; a toggle switches pretrained ↔ random control; confusion matrices below, per problem or
 overall.
+
+With solutions from `solve`, the problem text panel also toggles iGSM's reference solution ↔
+what the model wrote, badged with iGSM's strict verdict (answer, every calculation and every
+dependency), and the problem-selection dots fill green (solved) or red-× (not). Without them the
+page shows the reference solution alone.
 
 ## Known gaps / TODOs
 
