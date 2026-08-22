@@ -47,7 +47,7 @@ app = typer.Typer(add_completion=False, help='iGSM-med Figure-3 eval (inspect_ai
 def run(
     model: Annotated[
         Path, typer.Option('--model', help='HF checkpoint dir with GPT2LMHeadModelWithRoPE.')
-    ],
+    ] = Path('models/gpt2-igsm-med'),
     data_root: Annotated[
         Path, typer.Option('--data-root', help='Dir with med_<fmt>_<spec>.parquet slices.')
     ] = Path('data/igsm_eval'),

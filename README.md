@@ -14,17 +14,17 @@ make pre-commit
 git submodule update --init --recursive # clones iGSM
 ```
 
-## Examples
-### Data gen
-
+## Data
+For whole data download (~34Gb) for training/eval/probes:
 ```
-uv run python -m src.data.igsm generate --split train --num-problems 300000 --workers 12 --batch-size 100000 --out data/igsm_train_100k
+hf download --type dataset SimulatedScience/igsm-med-120Mproblems --local-dir data/
 ```
-300000 problems -> 3 shards, 131421 packed windows of length 768 at data/igsm_train_100k
-  note: paper trains 100k steps x batch 512 ~= 51M windows; this finite dataset is cycled over epochs for the working version.
-and it took 1h, so it would take whole day on my pc to generate it.
 
-### Training
+If you are interested in only some parts, you can go to our HF [repo](https://huggingface.co/datasets/SimulatedScience/igsm-med-120Mproblems) and use `--include` flag.
+
+## Pre-training
+
+### Local
 
 Single gpu, no eval, no wandb
 ```
@@ -40,7 +40,7 @@ Full training, with exactly same setup as paper
 ```
 WANDB_ENTITY=m6rcin53-marcin-mazur WANDB_PROJECT=physics_of_llms CUDA_VISIBLE_DEVICES=0,1 uv run accelerate launch --num_processes 2 -m src.train.gpt --report-to wandb --max-steps 100_000 --logging-steps 1_000 --save-steps 10_000 --data-dir data/igsm_train_100k
 ```
-This takes ~130 on 2x3090
+This takes ~130h on 2x3090
 
 We also added flash_attention option which also casts model weights to bf16, for biggest VRAM wins, to use it set `--attn-implementation flash_attention_2`.
 
@@ -50,7 +50,7 @@ Pre-flight smoke test (real GPU path, 20 steps, 1 GPU, no wandb/eval/compile) be
 multi-day job:
 
 ```
-sbatch smoke.sbatch
+sbatch scripts/runs/smoke.sbatch
 squeue -u $USER
 tail -f smoke-<JOBID>.log
 ```
@@ -61,7 +61,7 @@ sacct -j <JOBID> --format=JobID,State,ExitCode,MaxRSS,ReqMem,Elapsed
 
 Full training (100k steps, 3x A100, matches the paper's effective batch size closely: 16 x 11 x 3 = 528 vs 512):
 ```
-sbatch train.sbatch
+sbatch scripts/runs/train.sbatch
 squeue -u $USER
 tail -f train-<JOBID>.log
 ```
@@ -72,51 +72,34 @@ sbatch --export=ALL,RESUME=1 train.sbatch
 
 ### Eval
 
-To generate the data without reask run
+Download best model:
 ```
-uv run python -m src.data.eval --seed 0 --out data/igsm_eval  --no-reask
-```
-
-To run the eval on smallest set of problems
-```
-uv run python -m src.eval.run --model models/gpt2-rope-igsm/checkpoint-800 --slices med_pq_op_le15 --batch-size 64 --limit 512
+hf download SimulatedScience/gpt2-igsm-med --include "model/20260730/final/*" --local-dir models/tmp && mv models/tmp/model/20260730/final models/gpt2-igsm-med && rm -r models/tmp
 ```
 
-## Full repro
-
-### Dummy model
-
-1. Data
+To run the eval on smallest set of problems (make batch-size smaller in case of OOM)
 ```
-uv run python -m src.data.eval --seed 0 --out data/igsm_eval  --no-reask
-mkdir -p data/smallest_pq_eval && cp data/igsm_eval/med_pq_op_le15.parquet data/igsm_eval/med_pq_op_le15.parquet
-uv run python -m src.data.pack --in data/smallest_pq_eval --out data/smallest_pq_eval_sharded --ctx 768 --mode single --shard-size 500
+uv run python -m src.eval.run --slices med_pq_op_le15 --batch-size 64
 ```
 
-2. Training
-
+Full eval for pq
 ```
-WANDB_ENTITY=m6rcin53-marcin-mazur WANDB_PROJECT=physics_of_llms CUDA_VISIBLE_DEVICES=0,1 uv run accelerate launch --num_processes 2 -m src.train.gpt --report-to wandb --max-steps 100_000 --logging-steps 10 --save-steps 500 --no-bf16 --output-dir models/gpt2-rope-igsm-100k-fp32 --data-dir data/igsm-117Mproblems-shuffled-merged
-```
-On 2x3090 it takes ~3h
-
-3. Eval
-
-```
-uv run python -m src.eval.run --model models/gpt2-rope-igsm/checkpoint-11000 --slices med_pq_op_le15 --batch-size 64 --limit 64
-```
-I had to finish after 11k steps, but it still got pretty good results
-```
-Figure 3 (med) -- slice accuracy:
-  slice                        n    accuracy
-  med_pq_op_le15              64      0.7812
+uv run python -m src.eval.run --batch-size 64
 ```
 
-### Full training
+Results:
 
-Unfortunately for our case mixed precision did NOT work (probably due to no QK-norm), so we decided to go all the way fp32 (not even tf32!).
 
-```
-WANDB_ENTITY=m6rcin53-marcin-mazur WANDB_PROJECT=physics_of_llms CUDA_VISIBLE_DEVICES=0,1 uv run accelerate launch --num_processes 2 -m src.train.gpt --report-to wandb --max-steps 100_000 --logging-steps 50 --save-steps 500 --no-bf16 --output-dir models/gpt2-rope-igsm-100k-fp32 --data-dir data/igsm-117Mproblems-shuffled-merged --per-device-train-batch-size 16 --gradient-accumulation-steps 16 --dataloader-num-workers 2 --streaming
-```
-~250h on 2x3090
+## Probing
+
+In case you would like to
+
+
+I am not sure why seed 1_000_000 when we already have the split between train and test? - its connected     to --dep-all-pairs, split doesnt matter anymore
+I was thinking of adding another control model, normal pretrained gpt, cause one could say that random      init is completely different.
+
+Run the training of the probes:
+* original gpt2
+* main, we need higher than 85 we are aimimng for 95, more than 2 epochs, checkpoint after each epoch
+
+Probe can_next/nec_next if I have time

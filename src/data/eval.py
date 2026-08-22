@@ -8,7 +8,7 @@ op count, and the **pickled gold ``Problem``** so the eval can reuse iGSM's
 
 Slices (med family: ip<=20, max_edge=20, perm_level=5, detail_level=0), x2 for pq/qp:
     op_le15 (in-distribution), op_eq15, op_eq20, op_eq21, op_eq22, op_eq23 (OOD),
-    plus a reask slice (re-asks an in-dist op<=15 problem) when --reask (default).
+    plus a reask slice (iGSM-med^{op=20,reask}: re-asks an exactly-op=20 problem) when --reask.
 
 Token layout per problem (iGSM / GPT-2 BPE):
     prompt = [50256, 222, <problem>, 223]                              (= IdGen.prob_id)
@@ -22,8 +22,9 @@ Consumer notes (for the downstream inspect_ai eval):
   (no sentinels -> silently 0%), and note prompt_ids is NOT a clean prefix of gold_token_id.
 - The ``problem`` column is a pickled iGSM ``Problem``; call ``ensure_igsm_submodule()`` (puts iGSM
   on sys.path) BEFORE ``pickle.loads``, or it raises ``ModuleNotFoundError: math_gen``.
-- ``reask`` slice: ``op`` is the *re-asked* op count (can exceed 15 -- reask changes the needed
-  ops, by design), and reask bypasses hash-bin validation (it is an OOD construction, footnote 10).
+- ``reask`` slice: the base problem has exactly 20 ops (iGSM-med^{op=20}); ``op`` records the
+  *re-asked* op count, not 20 -- reask changes the needed ops by design (footnote 10) -- and
+  reask bypasses hash-bin validation (it is an OOD construction, footnote 10).
 - Wrap ``true_correct`` in try/except in the scorer: it ``raise ValueError`` on the
   ``sol_op < n_op`` branch, which a malformed generation could trip.
 
@@ -58,8 +59,9 @@ OP_SPECS: list[tuple[str, dict[str, Any]]] = [
     ('op_eq22', dict(max_op=22, op=22)),
     ('op_eq23', dict(max_op=23, op=23)),
 ]
-# reask resamples the query of an in-distribution op<=15 problem (paper Section 2.4, footnote 10).
-REASK_CFG: dict[str, Any] = dict(max_op=15, op=None)
+# reask: base problem from iGSM-med^{op=20} (exactly 20 ops -- first OOD level), then resample the
+# query (paper Section 2.4, Figure 3's "op=20 (reask)" column; footnote 10).
+REASK_CFG: dict[str, Any] = dict(max_op=20, op=20)
 FORMATS = ('pq', 'qp')
 # Max base-problem regenerations when iGSM's buggy re_ask rejects a problem (see _generate_slice).
 _REASK_MAX_ATTEMPTS = 100
@@ -87,7 +89,8 @@ def _generate_slice(
         # A FRESH IdGen is built per problem (per attempt) for two reasons:
         #  (1) IdGen samples `op_` exactly once in __init__ and gen_prob only accepts problems with
         #      n_op == op_, so one instance emits only a SINGLE op count. Re-instantiating per
-        #      problem re-draws op_, reproducing the op<=N spread for op_le15 and the reask base
+        #      problem re-draws op_, reproducing the op<=N spread for op_le15 (the reask base is
+        #      pinned at op=20, so its fresh IdGen re-draws the same count)
         #      (src/data/igsm.py now also re-instantiates IdGen per problem for the same reason).
         #  (2) re_ask overwrites gen.op_ with the re-asked op count, which can EXCEED max_op; if
         #      that leaked into the next gen_prob, its `while n_op != op_` loop could never
@@ -99,6 +102,10 @@ def _generate_slice(
         for _attempt in range(_REASK_MAX_ATTEMPTS):
             gen = IdGen(**cfg)
             gen.gen_prob(bins, p_format=p_format)
+            if pinned_op is not None:
+                # Check the BASE op pre-reask: re_ask later overwrites n_op with the re-asked count
+                # (footnote 10), which is generally != the pinned op.
+                assert gen.problem.n_op == pinned_op, f'{name}: op pinning failed'
             if not reask:
                 ok = True
                 break
@@ -125,8 +132,6 @@ def _generate_slice(
             f'{name}: bad gold layout'
         )
         assert SOL_BOS in gold_token_id and ANS_BOS in gold_token_id, f'{name}: missing sentinels'
-        if pinned_op is not None:
-            assert gen.problem.n_op == pinned_op, f'{name}: op pinning failed'  # type: ignore[union-attr]
 
         records.append(
             {
