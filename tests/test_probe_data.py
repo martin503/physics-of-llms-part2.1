@@ -145,6 +145,43 @@ def test_recorded_op_reproduces_the_dataset_problem(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize('target, unbalanced', [('nece', False), ('dep', True)])
+def test_pinned_op_builds_one_difficulty(tmp_path, target, unbalanced):
+    """`op` pins every problem to that step count -- the per-op eval shards of Figure 7a.
+
+    A pinned shard must hold exactly one difficulty (the shard *is* one figure column), record
+    its `op` in metadata so downstream tools can replay the request, and -- on dep with the
+    unbalanced sampling the eval shards use -- keep the natural class mix instead of the 1:1
+    balance of training data.
+    """
+    out = tmp_path / 'pinned'
+    meta = generate_queries_to_dir(out, 4, target=target, split='test', workers=2,
+                                   problems_per_shard=4, med_cfg=MED_4, max_queries=10,
+                                   unbalanced=unbalanced, op=3)
+
+    queries, loaded_meta = load_vprobe_queries(out)
+    assert meta['op'] == 3
+    assert meta['uniform_difficulty'] is False
+    assert loaded_meta['op'] == 3
+    assert {q.n_op for q in queries} == {3}
+    if target == 'dep':
+        rate = sum(q.label for q in queries) / len(queries)
+        assert 0.0 < rate < 0.45, f'unbalanced dep should stay near the natural mix, got {rate}'
+
+
+def test_pinned_op_and_uniform_difficulty_are_exclusive(tmp_path):
+    """The two difficulty controls answer the same question; passing both must fail loudly."""
+    with pytest.raises(ValueError, match='not both'):
+        generate_queries_to_dir(tmp_path / 'x', 1, uniform_difficulty=True, op=3, workers=1)
+
+
+def test_pinned_op_outside_max_op_is_refused(tmp_path):
+    """iGSM would silently raise its own cap; metadata must not claim a max_op problems exceed."""
+    with pytest.raises(ValueError, match='max_op'):
+        generate_queries_to_dir(tmp_path / 'x', 1, med_cfg=MED_4, op=5, workers=1)
+
+
+@pytest.mark.slow
 def test_worker_count_does_not_change_rows(tmp_path):
     """Splitting the same seeds across more workers must produce identical queries.
 

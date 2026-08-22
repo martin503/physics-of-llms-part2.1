@@ -64,7 +64,9 @@ METADATA_NAME = 'metadata.json'
 #      `n_queries`); the queries themselves are unchanged from 2
 #   4: per-problem query cap (`max_queries_per_problem`, `unbalanced`) and uniform difficulty
 #      (`uniform_difficulty`); `identity` records each setting
-QUERIES_VERSION = 4
+#   5: pinned-op datasets (`op`): every problem built at one step count, for the per-difficulty
+#      eval shards of the paper's Figure 7(a); queries from a given (seed, op) are unchanged
+QUERIES_VERSION = 5
 
 
 def git_commit(cwd: Path) -> str | None:
@@ -143,6 +145,7 @@ def generate_queries_to_dir(
     max_queries: int | None = None,
     unbalanced: bool = False,
     uniform_difficulty: bool = False,
+    op: int | None = None,
 ) -> dict[str, Any]:
     """Generate V-probe queries for `n_problems` seeds into `out`; return the metadata dict.
 
@@ -152,7 +155,9 @@ def generate_queries_to_dir(
     `unbalanced` drops `dep`'s 1:1 class balance, sampling random pairs instead.
     `uniform_difficulty` cycles the requested step count over `1..med_cfg['max_op']` by problem
     index, so any *prefix* of the dataset is difficulty-balanced too (`report-dep` embeds the
-    first N problems). All three go into `metadata.json`.
+    first N problems). `op` pins every problem to that one step count instead -- the
+    per-difficulty eval shards of the paper's Figure 7(a) -- and the two are mutually
+    exclusive. All of it goes into `metadata.json`.
     """
     from src.probe.build_queries import MAX_SEQ_LEN
 
@@ -162,6 +167,16 @@ def generate_queries_to_dir(
         # An all-pairs dataset exists to be mapped back onto the dependency graph; a capped
         # one would render graphs with most edges simply missing.
         max_queries = None
+    if op is not None:
+        if uniform_difficulty:
+            raise ValueError('pass `op` (one difficulty) or `uniform_difficulty` (cycled), not both')
+        if not 1 <= op <= med_cfg.get('max_op', 15):
+            # regenerate_problem silently raises its own cap, which would leave metadata
+            # claiming a max_op the problems exceed -- refuse so provenance stays honest.
+            raise ValueError(
+                f'op={op} is outside med_cfg max_op={med_cfg.get("max_op", 15)}; '
+                'raise --max-op so metadata records the cap actually used'
+            )
     identity = {
         'target': target,
         'split': split,
@@ -173,6 +188,7 @@ def generate_queries_to_dir(
         'max_queries_per_problem': max_queries,
         'unbalanced': unbalanced,
         'uniform_difficulty': uniform_difficulty,
+        'op': op,
         'queries_version': QUERIES_VERSION,
     }
 
@@ -192,10 +208,12 @@ def generate_queries_to_dir(
     num_shards = math.ceil(n_problems / problems_per_shard) if n_problems > 0 else 0
     all_seeds = list(range(seed_start, seed_start + n_problems))
     # Round-robin per problem, so every prefix of the dataset holds an
-    # equal share of each op count (i.e. sorted by op: 1 2 3 1 2 3 ...)
+    # equal share of each op count (i.e. sorted by op: 1 2 3 1 2 3 ...);
+    # a pinned `op` asks for one difficulty throughout instead.
     ops = list(range(1, med_cfg.get('max_op', 15) + 1))
     all_ops: list[int | None] = (
-        [ops[i % len(ops)] for i in range(n_problems)] if uniform_difficulty
+        [op] * n_problems if op is not None
+        else [ops[i % len(ops)] for i in range(n_problems)] if uniform_difficulty
         else [None] * n_problems
     )
     pbar = tqdm(

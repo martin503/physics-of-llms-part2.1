@@ -124,8 +124,9 @@ def solve_run(
     meta = json.loads((data_dir / 'metadata.json').read_text(encoding='utf-8'))
     split, med_cfg = meta.get('split', 'test'), meta.get('med_cfg')
     # An op-pinned problem differs from what the seed yields unpinned, so the request that
-    # built the dataset has to be repeated here (same rule as report_dep).
-    request_op = bool(meta.get('uniform_difficulty'))
+    # built the dataset has to be repeated here (same rule as report_dep): either the cycling
+    # of `uniform_difficulty` or a shard-wide pinned `op`.
+    request_op = bool(meta.get('uniform_difficulty') or meta.get('op'))
 
     problems = dataset_problems(data_dir)[:n_problems]
     assert problems, f'no problems found in {data_dir}; run `gen-data` first'

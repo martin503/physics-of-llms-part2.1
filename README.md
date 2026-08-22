@@ -31,7 +31,7 @@ Full training, ddp=2, no eval
 uv run accelerate launch --num_processes 2 -m src.train.gpt --max-steps 100_000 --logging-steps 10 --save-steps 10_000 --context-length 768 --no-eval --streaming --torch-compile
 ```
 
-This takes ~130h on 2x3090
+This takes ~120h on 2x3090
 
 ### SLURM (multi-GPU cluster, e.g. gruenau9/10 A100s)
 
@@ -95,6 +95,8 @@ Results:
 This repo currently supports 2 out of 6 probes described in the paper:
 * dep(A, B) - if parameter A (recursively) depends on parameter B
 * nece(A) - whether parameter A is necessary to get the answer
+
+Both trainings below use only 2.5% of what paper suggests in appendix, but results are pretty good, so we did not push it further.
 
 dep (takes ~1h on single 3090)
 ```
