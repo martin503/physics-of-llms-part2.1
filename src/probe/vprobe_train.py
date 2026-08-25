@@ -147,7 +147,7 @@ def train_vprobe(
     """
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
-    # apply_memory_guardrails(device, vram_fraction)
+    apply_memory_guardrails(device, vram_fraction)
     if device.startswith('cuda'):
         torch.cuda.reset_peak_memory_stats()
     train_queries, val_queries = _split_by_group(queries, val_frac, seed)

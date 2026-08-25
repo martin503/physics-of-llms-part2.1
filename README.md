@@ -1,5 +1,13 @@
 # Physics of llms part2.1 repro
 
+## Intro
+
+Purpose of this repo is to fill a small gap in physics of llms series by training the main gpt2 model (we would love to train more architectures/configurations, but we are gpu poor) used for analysis of reasoning of gsm like problems. We provide [data](https://huggingface.co/datasets/SimulatedScience/igsm-med-120Mproblems), [model](https://huggingface.co/SimulatedScience/gpt2-igsm-med) and some [probes](https://huggingface.co/SimulatedScience/gpt2-igsm-med/tree/main/probes). Unfortunately we could not get the same results as reported in the [paper](https://arxiv.org/abs/2407.20311), nevertheless we still reproduce one of the main findings:
+
+> Do models trained solely on grade-school math problems only learn to solve these problems, or do they develop some more general intelligence?
+
+~ **Yes!**
+
 ## Before first use
 
 ### UV
@@ -61,7 +69,7 @@ sbatch --export=ALL,RESUME=1 train.sbatch
 
 ### Eval
 
-Download best model:
+You can download our best model like that:
 ```
 hf download SimulatedScience/gpt2-igsm-med --include "model/20260730/final/*" --local-dir models/tmp && mv models/tmp/model/20260730/final models/gpt2-igsm-med && rm -r models/tmp
 ```
@@ -110,11 +118,11 @@ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=1 uv run p
 
 ### Eval
 
-You can find all of our probes [here](https://huggingface.co/SimulatedScience/gpt2-igsm-med/tree/main/probes).
+You can find our dep probe [here](https://huggingface.co/SimulatedScience/gpt2-igsm-med/tree/main/probes/vprobe-dep).
 
 #### dep
 ```
-uv run python scripts/probe/eval_fig7a.py --run-dir trained_probes/2026-08-22_162802_vprobe-dep
+uv run python scripts/probe/eval_fig7a.py --run-dir <dep_probe_dir>
 ```
 
 | Figure 7a slice | Paper † | Ours | Δ (pts) |
@@ -127,8 +135,11 @@ uv run python scripts/probe/eval_fig7a.py --run-dir trained_probes/2026-08-22_16
 | op=23 | 100.0 | 97.0 | −3.0 |
 
 #### nece
+
+You can find our nece probe [here](https://huggingface.co/SimulatedScience/gpt2-igsm-med/tree/main/probes/vprobe-nece).
+
 ```
-uv run python scripts/probe/eval_fig7a.py --run-dir trained_probes/2026-08-22_163023_vprobe-nece
+uv run python scripts/probe/eval_fig7a.py --run-dir <nece_probe_dir>
 ```
 
 | Figure 7a slice | Paper † | Ours | Δ (pts) |
@@ -143,3 +154,4 @@ uv run python scripts/probe/eval_fig7a.py --run-dir trained_probes/2026-08-22_16
 ## Acknowledgements
 
 - [iGSM repo](https://github.com/facebookresearch/iGSM)
+- [YT playlist](https://youtube.com/playlist?list=PLIZhMKKbVX6JmdngPRKvAS4u4L97odbGp&si=t9UUgMmF5lEJ2ozN)
