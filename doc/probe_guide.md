@@ -404,7 +404,7 @@ pq format — one accuracy cell per op count; the paper's med columns are `op≤
 ```bash
 uv run python scripts/probe/gen_eval_shards.py --target nece   # one op_<NN>/ dir per op
 uv run python scripts/probe/gen_eval_shards.py --target dep
-uv run python scripts/probe/eval_fig7a.py --run-dir trained_probes/<pretrained-run>
+uv run python scripts/probe/eval_fig7a.py --run-dir trained_probes/<pretrained-run> # target is read from probe dir
 ```
 
 - `gen_eval_shards.py` builds one dataset per op: 400 problems pinned to that op (`op` in

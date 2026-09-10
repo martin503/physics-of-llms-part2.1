@@ -155,9 +155,10 @@ def generate_queries_to_dir(
     `unbalanced` drops `dep`'s 1:1 class balance, sampling random pairs instead.
     `uniform_difficulty` cycles the requested step count over `1..med_cfg['max_op']` by problem
     index, so any *prefix* of the dataset is difficulty-balanced too (`report-dep` embeds the
-    first N problems). `op` pins every problem to that one step count instead -- the
-    per-difficulty eval shards of the paper's Figure 7(a) -- and the two are mutually
-    exclusive. All of it goes into `metadata.json`.
+    first N problems).
+    `op` pins every problem to that one step count; mutually exclusive with `uniform_difficulty`.
+      Use this for per-difficulty eval shards of paper's Figure 7(a)
+    All these settings are written to `metadata.json`.
     """
     from src.probe.build_queries import MAX_SEQ_LEN
 
