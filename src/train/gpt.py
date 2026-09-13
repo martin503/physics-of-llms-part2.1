@@ -165,7 +165,7 @@ app = typer.Typer(add_completion=False, help='Train GPT-2 + RoPE on iGSM-med.')
 def train(
     data_dir: Annotated[
         Path, typer.Option('--data-dir', help='Pre-gen packed iGSM dataset dir.')
-    ] = Path('data/igsm_train'),
+    ] = Path('data/igsm_train_120M'),
     streaming: Annotated[
         bool,
         typer.Option(
@@ -198,10 +198,10 @@ def train(
     dataloader_num_workers: Annotated[int, typer.Option('--dataloader-num-workers')] = 4,
     per_device_train_batch_size: Annotated[
         int, typer.Option('--per-device-train-batch-size')
-    ] = 16,
+    ] = 32,
     gradient_accumulation_steps: Annotated[
         int, typer.Option('--gradient-accumulation-steps')
-    ] = 16,
+    ] = 8,
     learning_rate: Annotated[float, typer.Option('--learning-rate')] = 2e-3,
     lr_scheduler_type: Annotated[
         str, typer.Option('--lr-scheduler-type', help='transformers LR scheduler name.')

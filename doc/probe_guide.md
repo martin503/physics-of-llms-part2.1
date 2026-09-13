@@ -395,6 +395,35 @@ what the model wrote, badged with iGSM's strict verdict (answer, every calculati
 dependency), and the seed dots fill green (solved) or red-× (not). Without them the page shows
 the reference solution alone and leaves the solve-rate plot empty.
 
+## Per-difficulty eval: the Figure 7(a) row
+
+`scripts/probe/` holds the two-piece workflow for the paper's Figure 7(a) probe row (iGSM-med,
+pq format — one accuracy cell per op count; the paper's med columns are `op≤15`, `op=15`,
+`op=20..23`):
+
+```bash
+uv run python scripts/probe/gen_eval_shards.py --target nece   # one op_<NN>/ dir per op
+uv run python scripts/probe/gen_eval_shards.py --target dep
+uv run python scripts/probe/eval_fig7a.py --run-dir trained_probes/<pretrained-run> # target is read from probe dir
+```
+
+- `gen_eval_shards.py` builds one dataset per op: 400 problems pinned to that op (`op` in
+  `generate_queries_to_dir`), at most 10 random queries each — ~4k pairs/cell against the
+  paper's ≥4096. nece samples parameters at the natural rate; dep samples *random* pairs
+  (`unbalanced`: the natural ~16-20% positive the paper evaluates on, not the 1:1 training
+  balance). pq only — qp read positions are not supported. Default ops `1-15,20-23` mirror
+  the paper's columns; `--ops 1-23` adds 16-19.
+- `eval_fig7a.py` runs `test` on every shard for a trained run, then prints per-op accuracy,
+  the majority baseline and MCC plus the pooled `op≤15` column next to the paper's reported
+  values, and writes `<run-dir>/fig7a_eval.json`.
+
+Disjointness here needs no remote seed range: probe *training* data is generated with
+`--split train` (template bins 0-15 — the paper's probe-train rule, overlapping the LM's
+pretraining templates) while the shards use `--split test` (bins 16-22), and two shards can
+never hold the same problem because the pinned op is part of a problem's identity. Training
+data for this workflow: `gen-data --split train --max-op 15` (the pretraining distribution)
+into `data/probes/<target>/vprobe_<target>_train_80k`.
+
 ## Known gaps / TODOs
 
 See [backlog.md](backlog.md) for the live list.
