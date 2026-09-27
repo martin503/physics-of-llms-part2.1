@@ -6,7 +6,7 @@ Purpose of this repo is to fill a small gap in physics of llms series by trainin
 
 > Do models trained solely on grade-school math problems only learn to solve these problems, or do they develop some more general intelligence?
 
-~ **Yes!** Models generalize to harder, OOD propblems, retaining >90% success rate at least up to op=23.
+~ **Yes!**
 
 ## Before first use
 
